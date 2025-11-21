@@ -668,6 +668,304 @@ content/
             atlas/create-cluster.txt
 ```
 
+## Implementation Clarifications
+
+This section captures additional clarifications and decisions made during the
+requirements gathering process.
+
+### Executable vs. Non-Executable Code Heuristics
+
+**Context**: MongoDB documentation has been assembled over many years with many
+inconsistencies. We are messy humans who have created a large corpus of
+documentation with a wide range of content and many inconsistencies.
+
+**Decision**: The tooling should **not** rely on specific heuristics for
+detecting output or non-executable code, as these patterns are not consistently
+applied across the documentation corpus.
+
+**For `io-code-block` directives**: The tooling should **only** execute the
+`input` directive and should **not** validate against the `output` directive
+for the initial PoC. We have separate tooling for validating specific code
+blocks that can handle output validation. The scope here is to evaluate whether
+the procedure is executable as written.
+
+### State Management Between Code Blocks
+
+**Decision**: Variables from one code block **should** be available in
+subsequent blocks within the same step.
+
+**Open Question**: Whether state should persist across steps within a procedure
+is unclear. We don't have a clear picture of how we use code within procedures,
+so we'll have to figure this out through exploration of this space.
+
+**Implementation Note**: Each language may need its own state accumulation
+strategy. The tooling may need to create a wrapper/harness to execute
+accumulated code.
+
+### UI Interactions
+
+**PoC Scope**: Skip UI interactions in the initial PoC, but plan/account for it
+in the specification.
+
+**Framework**: No strong preference for UI testing framework. Optimize for
+well-maintained and lightweight options. Ideally, the tooling should abstract
+away the details so technical writers don't have to care what we use.
+
+**RST Representation**: A UI interaction in RST is either:
+- Plain text instruction to select something from a menu or interact with an
+  element
+- A `:guilabel:` directive with a UI text label indicating the element that we
+  should be interacting with or which should be present
+
+### API Requests
+
+**Scope**: The tooling should make actual API requests instead of mocking them,
+to validate that procedures work as written.
+
+**Authentication**: Most API calls will probably require authentication. If
+there is an API procedure, we can ask writers to provide authentication info in
+an `.env` file. The tooling should have the context to authenticate to any of
+our APIs as a prerequisite for running an API procedure test, as many of our
+API procedures will refer developers to somewhere else for details about
+authenticating with the API, and will assume the person following the procedure
+has authenticated.
+
+**Validation**: The tooling should make HTTP requests and validate that they
+succeed (appropriate status codes).
+
+### CLI Tool Execution
+
+**Shell Commands**: Atlas CLI and similar tools should be covered by shell
+execution.
+
+**mongosh Special Handling**: mongosh opens its own shell where we may need to
+execute commands, so it may need special handling. Alternatively, we can use an
+approach where we write mongosh commands to temp files and use the mongosh file
+execution functionality to execute them, if we don't want to deal with
+operating directly in a mongosh shell.
+
+**Prerequisite Checks**: The tooling should verify CLI tools are installed
+before attempting execution.
+
+### URL Validation
+
+**Scope**: The tooling should validate URLs in comments/strings **and** explicit
+URL directives. If we show a URL, it should work, and if it doesn't, we should
+fix it or remove it.
+
+**Implementation**: Make HEAD requests to validate URLs. No strong opinion
+regarding following redirects or timeouts for URL checks. Basically, we want to
+make sure a user attempting to click a URL in our docs procedure can get to the
+URL, or we should consider it a bad URL and remove it.
+
+### Placeholder Detection and Replacement
+
+**Reference**: See `reference-code/placeholder-consistency.md` for a
+comprehensive analysis of placeholder inconsistencies across the documentation.
+
+**Strategy**: The tooling should attempt to resolve common placeholders and
+their variations. Common placeholder patterns include:
+- Angle brackets: `<connection-string>`, `<username>`, `<password>`
+- Multiple naming conventions: kebab-case, camelCase, space separated, snake_case
+- Variations for the same concept (e.g., 25 different ways to represent
+  "connection string")
+
+**Failure Handling**: If a placeholder cannot be resolved, the test should
+**fail** until writers correct the inconsistent placeholders. This is
+acceptable - if writers are using inconsistent placeholders, we're okay with
+failing the test until writers can correct them.
+
+**Configuration**: For the initial implementation, writers should **not** be
+required to provide a configuration file mapping placeholders to environment
+variables. The tooling should use intelligent matching based on the placeholder
+consistency analysis.
+
+### Test Discovery and Execution
+
+**Discovery Options**:
+1. Maintain a separate list of files that should be tested (easiest at the
+   beginning)
+2. Add a new option to the reStructuredText `meta` directive to specify in page
+   metadata that a page contains procedures we should test (would require
+   scanning thousands of pages)
+
+**Decision**: Use option 1 (separate list) for the initial implementation. If
+we use the project structure proposed in this document with a separate
+`procedures` testing directory, we can ask writers to manually specify the
+procedure files we want to test.
+
+**Philosophy**: Optimize for the technical writer audience and make it as easy
+as possible for them to use the tooling. Reduce their learning curve as much as
+possible to make it easier for them to get testing on procedures.
+
+### Parallel vs. Sequential Execution
+
+**Decision**: Tests should run **sequentially**, not in parallel.
+
+**Rationale**: If we're executing tests against a single local environment,
+like a local database, parallel execution could cause flaky or inconsistent
+test behavior.
+
+### Database/Resource Cleanup
+
+**Automatic Cleanup**: The tooling should automatically detect and clean up
+created databases/collections.
+
+**Failure Handling**: The tooling should flag cleanup failures in the test
+output so writers can manually perform cleanup steps.
+
+**Blocking Consideration**: We may want to consider a cleanup failure blocking
+further test execution, because it may create issues with tests that come
+after. We may want to handle this situationally, because some types of cleanup
+failures may not warrant completely failing the tests.
+
+### Extract File Resolution
+
+**Complexity**: The extract file resolution is complex, but it's
+a reality of our docs.
+
+**Requirements**:
+- Recursively resolve nested `inherit` references
+- Perform string replacement for `{{variable}}` placeholders
+- There may be other extract file patterns beyond the YAML format shown in the
+  examples, but we don't know what they are, so we'll have to handle them as we
+  encounter them
+
+### Composable Tutorial Dependencies
+
+**Incomplete Information**: Composable tutorial selections do not tell the full
+story on dependencies.
+
+**Additional Dependencies**: Dependencies may also be communicated in:
+- Prerequisites or requirements documented within the procedure
+- Languages of code blocks independent of the composable tutorial selections
+- For example, most of our Driver procedures probably also have shell commands
+  in addition to the Driver programming language
+- Something like the Java Driver may have additional dependencies, such as
+  Maven, which aren't necessarily communicated in the composable tutorial
+  selection
+
+**Implication**: The tooling cannot rely solely on composable tutorial
+dependencies to determine what needs to be installed or configured.
+
+## Recommended PoC Scope
+
+Based on the requirements and clarifications above, the following scope is
+recommended for the proof-of-concept implementation:
+
+### Phase 1: Core Parsing & Execution (Priority for PoC)
+
+**RST Parsing**:
+- Parse `procedure` and `step` directives
+- Parse `code-block` and `literalinclude` directives
+- Extract code content and metadata (language, options)
+- Basic `include` directive resolution for transclusion
+
+**Code Execution**:
+- Execute code snippets in JavaScript, Python, PHP, and Shell
+- Combine code snippets within a step (state persistence within step)
+- Basic error capture and reporting
+
+**Placeholder Interpolation**:
+- Load environment variables from `.env` files
+- Resolve common placeholders using the consistency analysis from
+  `reference-code/placeholder-consistency.md`
+- Support common patterns: `<connection-string>`, `<username>`, `<password>`,
+  `<database>`, `<collection>`, etc.
+- Handle variations (kebab-case, camelCase, space separated)
+
+**Environment Detection**:
+- Verify required tools are installed (Node.js, Python, PHP, mongosh, atlas-cli)
+- Report missing dependencies before attempting execution
+- Provide clear error messages for missing tools
+
+**Error Reporting**:
+- Report errors with file path and line numbers
+- Include step number and description
+- Show the failing code snippet
+- Display error messages from execution
+- Provide verbose mode for detailed output
+
+### Phase 2: Conditional Content (Post-PoC)
+
+**Tab Variants**:
+- Parse `tabs` and `tab` directives
+- Generate test variants based on `:tabid:` values
+- Execute each variant independently
+
+**Composable Tutorial Variants**:
+- Parse `composable-tutorial` and `selected-content` directives
+- Generate test combinations based on `:options:` and `:selections:`
+- Execute each combination independently
+
+**Advanced Transclusion**:
+- Resolve nested `include` directives
+- Handle `start-after` and `end-before` options
+- Support `sharedinclude` directive
+
+### Phase 3: Advanced Features (Defer to Post-PoC)
+
+**Extract File Resolution**:
+- Parse YAML extract files
+- Resolve nested `inherit` references
+- Perform `{{variable}}` placeholder replacement
+- Handle extract file edge cases as encountered
+
+**UI Testing**:
+- Integrate headless browser (Playwright, Puppeteer, or similar)
+- Detect `:guilabel:` directives
+- Validate UI elements are present
+- Abstract framework details from technical writers
+
+**Advanced Output Validation**:
+- Validate `io-code-block` output against expected results
+- Support flexible matching (exact, regex, contains)
+- Handle dynamic values (timestamps, IDs, etc.)
+
+**Parallel Test Execution**:
+- Run tests in parallel where safe
+- Detect and avoid resource conflicts
+- Provide configuration for parallelization level
+
+**Sophisticated Cleanup**:
+- Provide cleanup hooks/callbacks for writers to define
+- Automatic detection of created resources
+- Configurable cleanup failure handling (block vs. warn)
+
+### Out of Scope for Initial Implementation
+
+The following items are explicitly out of scope for the initial PoC:
+
+- Windows support (Unix/macOS only)
+- Advanced output validation for `io-code-block`
+- UI testing with headless browsers
+- Parallel test execution
+- Complex extract file resolution
+- Custom cleanup hooks
+- Integration with existing test frameworks beyond basic reporting
+- Performance optimization
+- Caching of parsed RST files
+- Incremental test execution
+
+### Test Invocation
+
+**Writer Experience**: The tooling should be as easy as possible for technical
+writers to use. The learning curve should be minimal.
+
+**Invocation Options** (to be determined during implementation):
+- `npm test` or `npm run test-procedures`
+- Custom CLI tool (e.g., `procedure-test <file>`)
+- Integration with existing test runners
+
+**Test File Specification**: Writers should manually specify which files to
+test, either through:
+- A configuration file listing test files
+- Command-line arguments
+- A dedicated test directory structure
+
+**Avoid**: Requiring writers to scan thousands of pages or add metadata to
+every page. Keep the barrier to entry low.
+
 ## Appendix A: Code Block Types
 
 For the MongoDB documentation, we group code blocks into the following types:
