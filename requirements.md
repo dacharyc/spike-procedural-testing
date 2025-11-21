@@ -55,6 +55,40 @@ types of interactions:
 It should be able to test procedures as written, interpolating any placeholder
 variables such as connection strings from .env or configuration files.
 
+Many procedures include steps to connect to MongoDB Atlas or a local MongoDB
+server. The tooling should be able to interpolate the connection string from
+a .env file or other configuration file. For example:
+
+```rst
+.. step:: Connect to MongoDB Atlas
+
+   Connect to your Atlas cluster using the following connection string:
+
+   .. code-block:: bash
+
+      mongosh "mongodb+srv://<username>:<password>@<cluster>.mongodb.net/admin"
+```
+
+The tooling should be able to interpolate the `<username>`, `<password>`, and
+`<cluster>` variables from a .env file or other configuration file, and/or
+replace the entire connection string with a variable such as `<connection-string>`.
+
+The user's environment file might resemble:
+
+```
+CONNECTION_STRING=mongodb+srv://myAwesomeUsername:myAwesomePassword@Cluster0.mongodb.net
+```
+
+The tooling should replace the connection string in the procedure with the
+value from the environment file, and correctly append the `/admin` database
+name to the end of the connection string.
+
+Additional environment variables may be required for other types of procedures,
+such as API keys, credentials, or other configuration values. The tooling
+should be able to interpolate these variables into the procedure as well. We
+do not currently have a comprehensive list of all possible variables, but we
+can start with a small set and expand as needed.
+
 ### Execution
 
 #### Environments
@@ -72,6 +106,14 @@ The tooling should attempt to verify any execution environments are available
 before executing the procedure. For example, if a procedure contains a step to
 execute Go code, the tooling should verify that Go is installed and available
 for execution before attempting to test the procedure.
+
+For the initial scope, assume the tooling must support execution environments
+required to execute code in the following languages:
+
+- JavaScript
+- PHP
+- Python
+- Shell
 
 If any required environments are not available, the tooling should report the
 missing requirements and skip the test. We will not require writers to install
@@ -94,6 +136,110 @@ context of the step and the content of the code snippet.
 
 For more details, refer to Appendix A: Code Block Types.
 
+##### Executable examples
+
+###### Shell commands
+
+The tooling should be able to execute shell commands written for Unix. Windows
+is out of scope of the initial Poc.
+
+For example:
+
+```sh
+mkdir my-project
+```
+
+###### Code
+
+The tooling should be able to execute code written in various languages. For
+example:
+
+```javascript
+const assert = require('assert');
+assert.equal(1, 1);
+```
+
+```python
+assert 1 == 1
+```
+
+###### Combining snippets
+
+A procedure may break down a usage example into a series of snippets. For
+example, a procedure may show how to perform an aggregation query by breaking
+down the query into its component stages. In this case, the tooling should
+attempt to piece together the snippets into a complete usage example and test
+the complete usage example.
+
+For example, the tooling should be able to combine the following snippets:
+
+```javascript
+const MongoClient = require('mongodb').MongoClient;
+```
+
+```javascript
+const uri = "<connection-string>";
+```
+
+```javascript
+const client = new MongoClient(uri);
+await client.connect();
+```
+
+```javascript
+const db = await client.db('mydb');
+```
+
+```javascript
+db.ping();
+```
+
+Into the following code to test:
+
+```javascript
+const assert = require('assert');
+const MongoClient = require('mongodb').MongoClient;
+const uri = process.ENV.CONNECTION_STRING;
+const client = new MongoClient(uri);
+await client.connect();
+const db = client.db('mydb');
+db.ping();
+```
+
+##### Non-executable examples
+
+###### Abstract placeholder examples
+
+Examples that demonstrate object shapes using field/value pairs that contain
+field names and types rather than concrete values are not executable. For
+example:
+
+```json
+{
+  "name": "string",
+  "age": "number",
+  "isStudent": "boolean"
+}
+```
+
+###### Output examples
+
+Code snippets that represent output rather than input are not executable. For
+example, the following snippet represents output and is not executable:
+
+```javascript
+{'plot': 'At the age of 21, Tim discovers he can travel in time and change what happens and has happened in his own life. His decision to make his world a better place by getting a girlfriend turns out not to be as easy as you might think.', 'title': 'About Time', 'score': 0.7710106372833252}
+{'plot': 'A psychiatrist makes multiple trips through time to save a woman that was murdered by her brutal husband.', 'title': 'Retroactive', 'score': 0.760047972202301}
+{'plot': 'A time-travel experiment in which a robot probe is sent from the year 2073 to the year 1973 goes terribly wrong thrusting one of the project scientists, a man named Nicholas Sinclair into a...', 'title': 'A.P.E.X.', 'score': 0.7576861381530762}
+{'plot': 'An officer for a security agency that regulates time travel, must fend for his life against a shady politician who has a tie to his past.', 'title': 'Timecop', 'score': 0.7576561570167542}
+{'plot': 'After visiting 2015, Marty McFly must repeat his visit to 1955 to prevent disastrous changes to 1985... without interfering with his first trip.', 'title': 'Back to the Future Part II', 'score': 0.7521393895149231}
+{'plot': 'A reporter, learning of time travelers visiting 20th century disasters, tries to change the history they know by averting upcoming disasters.', 'title': 'Thrill Seekers', 'score': 0.7509932518005371}
+{'plot': 'Lyle, a motorcycle champion is traveling the Mexican desert, when he find himself in the action radius of a time machine. So he find himself one century back in the past between rapists, ...', 'title': 'Timerider: The Adventure of Lyle Swann', 'score': 0.7502642869949341}
+{'plot': 'Hoping to alter the events of the past, a 19th century inventor instead travels 800,000 years into the future, where he finds humankind divided into two warring races.', 'title': 'The Time Machine', 'score': 0.7502503395080566}
+{'plot': 'A romantic drama about a Chicago librarian with a gene that causes him to involuntarily time travel, and the complications it creates for his marriage.', 'title': "The Time Traveler's Wife", 'score': 0.749496340751648}
+{'plot': 'A modern aircraft carrier is thrown back in time to 1941 near Hawaii, just hours before the Japanese attack on Pearl Harbor.', 'title': 'The Final Countdown', 'score': 0.7469133734703064}
+```
+
 #### Test execution
 
 This spec is for an initial spike on what this tooling may look like. Depending
@@ -115,6 +261,38 @@ Each procedure should be tested as an independent test case, and report
 success or failure independently. It should provide enough detail for
 a documentation writer to determine which procedure failed and how to
 debug the failure.
+
+#### Environment Cleanup
+
+The tooling should be able to clean up any environment changes made during
+procedure execution. For example, if a procedure creates a new database, the
+tooling should be able to drop the database after the procedure is complete.
+
+Each procecure should run in isolation to avoid potential interference with
+the execution.
+
+If the tooling creates temporary files for testing, the tooling should clean up
+after itself.
+
+#### Dependency Management
+
+If a procedure requires installing dependencies, we should check whether the
+environment already has the required dependencies installed. If so, use the
+existing dependencies.
+
+If not, the tooling should install the dependencies in a temporary environment
+for the duration of the test.
+
+We do not want to damage the writer's local environment, and we do not want to
+require writers to install dependencies that are not relevant to their work.
+If a writer needs to install dependencies to test a procedure, the tooling
+should provide clear instructions for the writer to install the dependencies
+manually.
+
+We may want to investigate the viability of running tests that require installing
+dependencies in a virtual machine or a Docker container to avoid polluting the
+writer's local environment. This is out of scope for the initial POC, as we
+would prefer to keep the tooling as lightweight as possible.
 
 ### Ecosystem
 
@@ -324,6 +502,172 @@ fails to execute, the tooling should provide the following information:
 - The error message returned by the execution environment
 - The line number of the code snippet where the error occurred (if applicable)
 
+#### Parser errors
+
+If the tooling encounters a parsing error while attempting to extract a
+procedure from the reStructuredText, it should provide a clear error message
+indicating the file and line number of the error.
+
+#### Execution errors
+
+### Test output
+
+Test reports should contain minimal output, except when needed to debug a failure.
+Consider a `--verbose` flag to enable verbose output with more details about
+what was executed, and how.
+
+If we implement something that uses Jest under the hood, we can take advantage
+of its built-in reporting and assertion capabilities.
+
+Output should be communicated in plain language for consumption by writers.
+
+#### Parsing details
+
+With verbose output enabled, the tooling should output details about the
+parsed procedures, including:
+
+- The number of procedures found
+- The number of steps within each procedure
+- A list containing each executable element within each step
+
+For example:
+
+```
+Found 2 procedures
+Procedure 1: 3 steps
+   Step 1: 1 executable elements
+   Step 2: 2 executable elements
+   Step 3: 1 executable elements
+Procedure 2: 2 steps
+   Step 1: 1 executable elements
+   Step 2: 1 executable elements
+```
+
+If the procedure is derived using composable tutorial selections or tab selections,
+the tooling should output the selections or tab IDs used to derive the procedure.
+
+For example:
+
+```
+Found 1 procedure
+Procedure 1 (selections: driver, nodejs): 3 steps
+   Step 1: 1 executable elements
+   Step 2: 2 executable elements
+   Step 3: 1 executable elements
+```
+
+Executable elements should contain the following information:
+
+- The type of executable element (code, shell, ui, cli, api, url)
+- The language of the executable element (if applicable)
+
+For example:
+
+```
+Found 1 procedure
+Procedure 1 (selections: driver, nodejs): 3 steps
+   Step 1: 1 executable elements (code, javascript)
+   Step 2: 2 executable elements (code, javascript) (code, javascript)
+   Step 3: 1 executable elements (code, javascript)
+```
+
+#### Execution details
+
+With verbose output enabled, the tooling should output details about the
+result of each executable element within each step.
+
+For example:
+
+```
+Procedure 1:
+   Step 1:
+      Successfully executed 1 executable elements (code, javascript)
+   Step 2:
+      Successfully executed 2 executable elements (code, javascript) (code, javascript)
+   Step 3:
+      Successfully executed 1 executable elements (code, javascript)
+```
+
+If an executable element fails, the tooling should output the error message
+and stack trace. For example:
+
+```
+Procedure 1:
+   Step 1:
+      Successfully executed 1 executable elements (code, javascript)
+   Step 2:
+      Failed to execute 1 of 2 executable elements
+      (code, javascript)
+      Error: ReferenceError: x is not defined
+         at file:///path/to/procedure.rst:10:5
+   Step 3:
+      Successfully executed 1 executable elements (code, javascript)
+```
+
+## Success Criteria
+
+This procedure testing tooling should evaluate success on two axes:
+
+- Each executable element within a procedure should execute successfully
+- Each procedure should execute successfully
+
+A procedure is considered successful if all of its executable elements execute
+successfully. A procedure is considered unsuccessful if any of its executable
+elements fail to execute.
+
+The tooling should not consider a procedure test to have failed if the
+procedure contains executable elements that are not tested. For example, if a
+procedure contains a code block that is not tested because it is not executable,
+the tooling should not consider the procedure to have failed.
+
+For the purposes of this PoC, an executable element is considered to have
+executed successfully if it does not throw an error. What this looks like in
+practice depends on the type of executable element. For example, a code block
+is considered to have executed successfully if the code does not throw an
+error. A shell command is considered to have executed successfully if the
+command returns a zero exit code. A URL is considered to have executed
+successfully if it returns a <400 HTTP status code.
+
+## Project Structure
+
+The tooling will be used in the documentation monorepo. This will likely
+reside within a `code-example-tests/procedures` directory at the root of the
+repo. This will be outside the scope of the specific documentation projects,
+and will be used to test procedures across the documentation.
+
+This is one possible project structure, but the specifics will vary
+based on what we decide to implement, and how we want writers to use it:
+
+```
+code-example-tests/
+   procedures/
+      tests/
+         drivers.test.js
+         atlas.test.js
+      tooling/
+         index.js
+         procedure.js
+         code-snippet.js
+         shell-command.js
+         ui-interaction.js
+         cli-request.js
+         api-request.js
+         url.js
+      package.json
+      package-lock.json
+content/
+   drivers/
+      source/
+         index.txt
+         includes/
+            driver/authenticate.txt
+   atlas/
+      source/
+         index.txt
+         includes/
+            atlas/create-cluster.txt
+```
+
 ## Appendix A: Code Block Types
 
 For the MongoDB documentation, we group code blocks into the following types:
@@ -440,18 +784,73 @@ Sample applications are complete, runnable programs that connect multiple
 discrete pieces of code. Sample apps may include error handling, framework
 integrations, or frontend UI elements.
 
+Sample applications are not testable as part of this scope.
+
 ## Appendix B: ReStructuredText Syntax
 
 The testing tooling need not support *all* reStructuredText syntax; only
 the subset relevant to procedure testing in MongoDB Documentation. This includes
 syntax related to:
 
+- Headings
 - Filepath parsing and transclusion
 - Procedures
 - Code snippets
 - Tabs
 - Composable tutorials
 - URL links
+
+### Headings
+
+MongoDB documentation uses the following restructuredText heading styles:
+
+```rst
+==
+H1
+==
+
+H2
+--
+
+H3
+~~
+
+H4
+``
+
+H5
+++
+```
+
+H2 headings represent different sections of the documentation page, and
+may correspond to distinct procedures.
+
+For example, on a page about managing search indexes, there may be distinct
+procedures for creating search indexes, viewing search indexes, updating search
+indexes, and deleting search indexes. Each of these procedures would be
+represented by an H2 heading.
+
+```rst
+Create a Search Index
+---------------------
+
+View Search Indexes
+-------------------
+
+Update Search Indexes
+---------------------
+
+Delete a Search Index
+---------------------
+```
+
+Each heading may also contain distinct procedures nested within it. For example,
+a section about creating search indexes may contain a procedure for creating a
+search index using the Atlas UI, and a separate procedure for creating a search
+index using the Atlas CLI.
+
+When scaled across all of the interfaces a user may use to create a search
+index, there may be many distinct procedures within a single H2 heading.
 
 ### Filepath parsing and transclusion
 
@@ -502,6 +901,93 @@ the documentation page.
 .. include:: /path/to/file.rst
    :start-after: start-marker
    :end-before: end-marker
+```
+
+##### Special case: `extracts`
+
+The MongoDB documentation contains a number of "extracts" yaml files that
+contain snippets of text that are included in multiple places within the
+documentation. For example, the `extracts-atlas-cli-commands.yaml` file
+contains snippets for all Atlas CLI commands.
+
+Extract files are referred to with a filepath that includes `/extracts/`, but
+are typically at the root of the `includes` directory. For example, the
+following line in a documentation source file references content from the
+atlas-cli extracts file:
+
+```rst
+.. include:: /includes/extracts/atlas-clusters-connectionStrings-describe.rst
+```
+
+But the actual file that contains the referenced content is at:
+
+```rst
+/includes/extracts-atlas-cli-commands.yaml
+```
+
+The content within the extract file is formatted as a series of yaml documents,
+each of which contains a `ref` key that is used to reference the content within
+the extract file. For example, the include above refers to this content:
+
+```yaml
+ref: atlas-clusters-connectionStrings-describe
+inherit:
+  ref: atlas-cli-source-tabs
+  file: extracts-atlas-cli-source-tabs.yaml
+replacement:
+  task: "return the SRV connection strings for your Atlas cluster"
+  commandWithDashes: "atlas-clusters-connectionStrings-describe"
+  commandWithoutDashes: "atlas clusters connectionStrings describe"
+```
+
+Which itself contains a reference to another extract file which has this content:
+
+```yaml
+ref: atlas-cli-source-tabs
+content: |
+
+  To {{task}} using the
+  {+atlas-cli+}, run the following command:
+
+  .. literalinclude:: /includes/command/{{commandWithDashes}}.rst
+     :start-after: :caption: Command Syntax
+     :end-before: .. Code end marker, please don't delete this comment
+     :language: sh
+     :dedent:
+
+  To learn more about the command syntax and parameters, see the
+  {+atlas-cli+} documentation for :atlascli:`{{commandWithoutDashes}}
+  </command/{{commandWithDashes}}>`.
+
+  {{optionalTutorialLine}}
+
+replacement:
+  task: ""
+  commandWithDashes: "atlas-accessLists-create"
+  commandWithoutDashes: "atlas accessLists create"
+  optionalTutorialLine: ""
+```
+
+The tooling should be able to resolve the actual file path for an extract file
+based on the reference in the `include` directive, and correctly resolve the
+nested references within the extract file to produce the final content to be
+tested.
+
+The example above should resolve to the following content:
+
+```rst
+To return the SRV connection strings for your Atlas cluster using the
+{+atlas-cli+}, run the following command:
+
+.. literalinclude:: /includes/command/atlas-clusters-connectionStrings-describe.rst
+   :start-after: :caption: Command Syntax
+   :end-before: .. Code end marker, please don't delete this comment
+   :language: sh
+   :dedent:
+
+To learn more about the command syntax and parameters, see the
+{+atlas-cli+} documentation for :atlascli:`atlas clusters connectionStrings describe
+</command/atlas-clusters-connectionStrings-describe>`.
 ```
 
 #### `literalinclude`
@@ -1048,3 +1534,16 @@ For example:
         --- source/
             --- index.txt
 ```
+
+## Appendix C: Example Pages
+
+This repository contains a `testdata` directory that contains example pages
+for testing the tooling. The `testdata` directory contains the following
+test pages:
+
+- `atlas/source/atlas-search/manage-indexes.txt`: a page with a composable tutorial
+- `atlas/source/connect-to-database-deployment.txt`: a page with a tab set
+- `drivers/source/symfony.txt`: a page with a relatively simple procedure
+
+These pages are paired with `snooty.toml` files that contain the source
+constant definitions for their projects.
