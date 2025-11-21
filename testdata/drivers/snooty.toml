@@ -1,0 +1,109 @@
+name = "drivers"
+title = "Drivers"
+
+toc_landing_pages = []
+
+intersphinx = ["https://www.mongodb.com/docs/manual/objects.inv"]
+sharedinclude_root = "https://raw.githubusercontent.com/10gen/docs-shared/main/"
+
+[constants]
+package-name-org = "docs-ecosystem"
+stable-api = "Stable API"
+node-driver-long = "MongoDB Node.js Driver"
+node-driver-short = "Node.js Driver"
+atlas = "MongoDB Atlas"
+mdb-server = "MongoDB Server"
+newest-mdb-server-major-version = "8.0"
+one-mdb-version-back = "7.0"
+two-mdb-versions-back = "6.0"
+one-mdb-version-back-eol-date = "August 2026"
+one-mdb-version-back-eol-date-plus-three-years = "August 2029"
+
+[[composables]]
+id = "driver-language"
+title = "Language"
+default = "c"
+options = [
+    { id = "c", title = "C" },
+    { id = "csharp", title = ".NET/C#" },
+    { id = "cpp", title = "C++" },
+    { id = "go", title = "Go" },
+    { id = "java", title = "Java" },
+    { id = "kotlin", title = "Kotlin" },
+    { id = "javascript", title = "JavaScript" },
+    { id = "php", title = "PHP" },
+    { id = "python", title = "Python" },
+    { id = "ruby", title = "Ruby" },
+    { id = "rust", title = "Rust" },
+    { id = "scala", title = "Scala" },
+]
+
+[[composables]]
+id = "java-driver-framework"
+title = "Driver or Framework"
+default = "java-sync"
+dependencies = [{ driver-language = "java" }]
+options = [
+    { id = "java-sync", title = "Java Sync Driver" },
+    { id = "java-async", title = "Java Reactive Streams Driver" },
+    { id = "hibernate", title = "Hibernate ORM" },
+]
+
+[[composables]]
+id = "kotlin-driver-framework"
+title = "Driver or Framework"
+default = "kotlin-sync"
+dependencies = [{ driver-language = "kotlin" }]
+options = [
+    { id = "kotlin-sync", title = "Kotlin Sync Driver" },
+    { id = "kotlin-async", title = "Kotlin Coroutine Driver" },
+]
+
+[[composables]]
+id = "javascript-driver-framework"
+title = "Driver or Framework"
+default = "nodejs"
+dependencies = [{ driver-language = "javascript" }]
+options = [{ id = "nodejs", title = "Node.js Driver" }]
+
+[[composables]]
+id = "csharp-driver-framework"
+title = "Driver or Framework"
+default = "csharp-driver"
+dependencies = [{ driver-language = "csharp" }]
+options = [
+    { id = "csharp-driver", title = ".NET/C# Driver" },
+    { id = "entity-framework", title = "Entity Framework Core Provider" },
+]
+
+[[composables]]
+id = "php-driver-framework"
+title = "Driver or Framework"
+default = "php-driver"
+dependencies = [{ driver-language = "php" }]
+options = [
+    { id = "php-driver", title = "PHP Driver" },
+    { id = "laravel", title = "Laravel MongoDB" },
+]
+
+[[composables]]
+id = "python-driver-framework"
+title = "Driver or Framework"
+default = "pymongo"
+dependencies = [{ driver-language = "python" }]
+options = [
+    { id = "pymongo", title = "PyMongo" },
+    { id = "arrow", title = "PyMongoArrow" },
+    { id = "motor", title = "Motor" },
+    { id = "django", title = "Django MongoDB Backend" },
+]
+
+[[composables]]
+id = "ruby-driver-framework"
+title = "Driver or Framework"
+default = "ruby-driver"
+dependencies = [{ driver-language = "ruby" }]
+options = [
+    { id = "ruby-driver", title = "Ruby Driver" },
+    { id = "mongoid", title = "Mongoid" },
+]
