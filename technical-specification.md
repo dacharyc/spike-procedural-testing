@@ -79,14 +79,14 @@ This technical specification defines the implementation details for a procedural
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CLI Entry Point                          │
-│                    (procedure-test command)                      │
+│                        (proctest command)                        │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Configuration Manager                          │
 │  • Load conventions (auto-discover .env, snooty.toml)            │
-│  • Load optional config file (.procedure-test.{json,js})         │
+│  • Load optional config file (.proctest.{json,js})               │
 │  • Merge with CLI flags                                          │
 │  • Validate and provide defaults                                 │
 └────────────────────────────┬────────────────────────────────────┘
@@ -148,7 +148,7 @@ This technical specification defines the implementation details for a procedural
 ### 2.3 Directory Structure
 
 ```
-procedure-test/
+proctest/
 ├── src/
 │   ├── cli/
 │   │   ├── index.ts              # CLI entry point
@@ -973,6 +973,7 @@ export interface Configuration {
   // Test Discovery
   testFiles: string[];
   exclude?: string[];
+  registry?: string;  // Path to test registry JSON file
 
   // Environment
   envFiles: string[];
@@ -1208,7 +1209,7 @@ export const DEFAULT_CONFIG: Configuration = {
 /**
  * Configuration loading priority (highest to lowest):
  * 1. CLI flags (--timeout, --verbose, etc.)
- * 2. Config file (.procedure-test.js or .procedure-test.json)
+ * 2. Config file (.proctest.js or .proctest.json)
  * 3. Convention-based discovery (.env, snooty.toml)
  * 4. Default configuration
  */
@@ -1252,10 +1253,10 @@ export class ConfigurationManager {
 
   private async findConfigFile(): Promise<string | null> {
     const candidates = [
-      '.procedure-test.js',
-      '.procedure-test.json',
-      'procedure-test.config.js',
-      'procedure-test.config.json'
+      '.proctest.js',
+      '.proctest.json',
+      'proctest.config.js',
+      'proctest.config.json'
     ];
 
     for (const candidate of candidates) {
@@ -1356,7 +1357,7 @@ ATLAS_ORG_NAME=MyOrg
 
 #### 3.2.5 Example Configuration with UI Testing
 
-**Complete Configuration Example** (`procedure-test.config.js`):
+**Complete Configuration Example** (`proctest.config.js`):
 
 ```javascript
 export default {
@@ -1615,7 +1616,7 @@ export * from './compass.js';
 // Export other product-specific mappings as needed
 ```
 
-**Consuming Shared Mappings** (`procedure-test.config.js`):
+**Consuming Shared Mappings** (`proctest.config.js`):
 
 ```javascript
 import {
@@ -1678,12 +1679,12 @@ Repository Structure:
 │       └── README.md          # Documentation for contributors
 ├── testdata/
 │   ├── atlas/
-│   │   ├── procedure-test.config.js  # Imports shared mappings
+│   │   ├── proctest.config.js  # Imports shared mappings
 │   │   └── source/*.txt
 │   └── drivers/
-│       ├── procedure-test.config.js  # Imports shared mappings
+│       ├── proctest.config.js  # Imports shared mappings
 │       └── source/*.txt
-└── procedure-test.config.js   # Root config (optional)
+└── proctest.config.js   # Root config (optional)
 ```
 
 **Update Workflow**:
@@ -1697,7 +1698,7 @@ Repository Structure:
 Teams can also use hierarchical configs for inheritance:
 
 ```javascript
-// Root: procedure-test.config.js
+// Root: proctest.config.js
 import { atlasNavigationMappings, atlasUserValues } from './shared/ui-navigation/index.js';
 
 export default {
@@ -1707,8 +1708,8 @@ export default {
   }
 };
 
-// Subdirectory: testdata/atlas/procedure-test.config.js
-import rootConfig from '../../procedure-test.config.js';
+// Subdirectory: testdata/atlas/proctest.config.js
+import rootConfig from '../../proctest.config.js';
 
 export default {
   ...rootConfig,
@@ -2716,6 +2717,191 @@ export interface CleanupResult {
 }
 ```
 
+### 4.3 Test Registry Data Model
+
+The test registry is a JSON file that maintains a curated list of verified procedures for automated CI testing.
+
+```typescript
+export interface TestRegistry {
+  version: string;
+  description?: string;
+  tests: TestRegistryEntry[];
+}
+
+export interface TestRegistryEntry {
+  // Unique identifier for this test
+  id: string;
+
+  // Path to the procedure file (relative to repository root)
+  path: string;
+
+  // Team or individual responsible for maintaining this test
+  owner: string;
+
+  // Date when this test was added to the registry (ISO 8601 format)
+  addedDate: string;
+
+  // Variants to test (e.g., ["atlas-ui", "mongosh", "nodejs"])
+  // If empty or omitted, all variants are tested
+  variants?: string[];
+
+  // Tags for categorization and filtering
+  tags: string[];
+
+  // Optional notes about what this test covers or special considerations
+  notes?: string;
+
+  // Optional: Skip this test temporarily (with reason)
+  skip?: {
+    reason: string;
+    skipUntil?: string; // ISO 8601 date
+  };
+}
+```
+
+**Example Test Registry** (`code-example-tests/procedures/test-registry.json`):
+
+```json
+{
+  "version": "1.0",
+  "description": "Registry of verified procedural tests for automated CI runs",
+  "tests": [
+    {
+      "id": "atlas-create-cluster",
+      "path": "content/atlas/source/tutorial/create-cluster.txt",
+      "owner": "atlas-docs-team",
+      "addedDate": "2024-01-15",
+      "variants": ["atlas-ui", "mongosh"],
+      "tags": ["atlas", "clusters", "tutorial"],
+      "notes": "Tests cluster creation via UI and mongosh"
+    },
+    {
+      "id": "drivers-connect-nodejs",
+      "path": "content/drivers/source/quick-start/nodejs.txt",
+      "owner": "drivers-team",
+      "addedDate": "2024-01-20",
+      "variants": ["nodejs"],
+      "tags": ["drivers", "nodejs", "quick-start"],
+      "notes": "Node.js driver connection quick start"
+    },
+    {
+      "id": "atlas-backup-restore",
+      "path": "content/atlas/source/how-to/backup-restore.txt",
+      "owner": "atlas-docs-team",
+      "addedDate": "2024-02-01",
+      "tags": ["atlas", "backup", "how-to"],
+      "skip": {
+        "reason": "Waiting for backup API changes to stabilize",
+        "skipUntil": "2024-03-01"
+      }
+    }
+  ]
+}
+```
+
+**Registry Loading and Filtering**:
+
+```typescript
+export class TestRegistryLoader {
+  async load(registryPath: string): Promise<TestRegistry> {
+    const content = await fs.readFile(registryPath, 'utf-8');
+    const registry = JSON.parse(content) as TestRegistry;
+
+    // Validate registry format
+    this.validate(registry);
+
+    return registry;
+  }
+
+  /**
+   * Filter registry entries based on criteria
+   */
+  filter(registry: TestRegistry, options: {
+    tags?: string[];
+    owner?: string;
+    includeSkipped?: boolean;
+  }): TestRegistryEntry[] {
+    let entries = registry.tests;
+
+    // Filter by tags
+    if (options.tags && options.tags.length > 0) {
+      entries = entries.filter(entry =>
+        options.tags!.some(tag => entry.tags.includes(tag))
+      );
+    }
+
+    // Filter by owner
+    if (options.owner) {
+      entries = entries.filter(entry => entry.owner === options.owner);
+    }
+
+    // Filter skipped tests
+    if (!options.includeSkipped) {
+      entries = entries.filter(entry => {
+        if (!entry.skip) return true;
+
+        // Check if skip period has expired
+        if (entry.skip.skipUntil) {
+          const skipUntil = new Date(entry.skip.skipUntil);
+          return new Date() > skipUntil;
+        }
+
+        return false;
+      });
+    }
+
+    return entries;
+  }
+
+  private validate(registry: TestRegistry): void {
+    if (!registry.version) {
+      throw new Error('Registry must have a version field');
+    }
+
+    if (!Array.isArray(registry.tests)) {
+      throw new Error('Registry must have a tests array');
+    }
+
+    // Validate each entry
+    for (const entry of registry.tests) {
+      if (!entry.id || !entry.path || !entry.owner || !entry.addedDate) {
+        throw new Error(`Invalid registry entry: ${JSON.stringify(entry)}`);
+      }
+
+      // Validate date format
+      if (isNaN(Date.parse(entry.addedDate))) {
+        throw new Error(`Invalid date format in entry ${entry.id}: ${entry.addedDate}`);
+      }
+    }
+
+    // Check for duplicate IDs
+    const ids = new Set<string>();
+    for (const entry of registry.tests) {
+      if (ids.has(entry.id)) {
+        throw new Error(`Duplicate test ID: ${entry.id}`);
+      }
+      ids.add(entry.id);
+    }
+  }
+}
+```
+
+**CLI Usage with Registry**:
+
+```bash
+# Run all tests in registry
+proctest test --registry code-example-tests/procedures/test-registry.json
+
+# Run registry tests with specific tags
+proctest test --registry code-example-tests/procedures/test-registry.json --tags atlas,tutorial
+
+# Run registry tests for specific owner
+proctest test --registry code-example-tests/procedures/test-registry.json --owner atlas-docs-team
+
+# Include skipped tests
+proctest test --registry code-example-tests/procedures/test-registry.json --include-skipped
+```
+
 ---
 
 ## 5. API Specifications
@@ -2724,46 +2910,47 @@ export interface CleanupResult {
 
 ```bash
 # Basic usage
-procedure-test <file>                    # Test single file
-procedure-test <directory>               # Test all files in directory
-procedure-test --all                     # Test all discovered files
+proctest <file>                    # Test single file
+proctest <directory>               # Test all files in directory
+proctest --all                     # Test all discovered files
+proctest --registry <file>         # Test procedures from registry file
 
 # Configuration
-procedure-test --config <file>           # Use specific config file
-procedure-test --init                    # Create config file interactively
+proctest --config <file>           # Use specific config file
+proctest --init                    # Create config file interactively
 
 # Environment
-procedure-test --env <file>              # Use specific .env file
-procedure-test --snooty <file>           # Use specific snooty.toml
+proctest --env <file>              # Use specific .env file
+proctest --snooty <file>           # Use specific snooty.toml
 
 # Execution control
-procedure-test --timeout <ms>            # Override timeout
-procedure-test --no-cleanup              # Skip cleanup
-procedure-test --fail-fast               # Stop on first failure
+proctest --timeout <ms>            # Override timeout
+proctest --no-cleanup              # Skip cleanup
+proctest --fail-fast               # Stop on first failure
 
 # Output control
-procedure-test --verbose                 # Verbose output
-procedure-test --quiet                   # Minimal output
-procedure-test --reporter <type>         # Specify reporter (human, json, junit)
-procedure-test --output <file>           # Write output to file
+proctest --verbose                 # Verbose output
+proctest --quiet                   # Minimal output
+proctest --reporter <type>         # Specify reporter (human, json, junit)
+proctest --output <file>           # Write output to file
 
 # Filtering
-procedure-test --filter <pattern>        # Filter procedures by name
-procedure-test --exclude <pattern>       # Exclude files/procedures
+proctest --filter <pattern>        # Filter procedures by name
+proctest --exclude <pattern>       # Exclude files/procedures
 
 # Debugging
-procedure-test parse <file>              # Parse file and display AST structure
-procedure-test parse <file> --output <file>  # Write parsed AST to file
-procedure-test parse <file> --format <type>  # Output format: tree (default), json, yaml
-procedure-test --dry-run                 # Parse and validate without executing
-procedure-test --list                    # List discovered procedures
-procedure-test --validate-env            # Validate environment setup
+proctest parse <file>              # Parse file and display AST structure
+proctest parse <file> --output <file>  # Write parsed AST to file
+proctest parse <file> --format <type>  # Output format: tree (default), json, yaml
+proctest --dry-run                 # Parse and validate without executing
+proctest --list                    # List discovered procedures
+proctest --validate-env            # Validate environment setup
 ```
 
 ### 5.2 Programmatic API
 
 ```typescript
-import { ProcedureTest } from 'procedure-test';
+import { ProcedureTest } from 'proctest';
 
 // Create instance with configuration
 const tester = new ProcedureTest({
@@ -3442,19 +3629,19 @@ The `parse` command is a debugging tool that displays the parsed AST structure w
 
 ```bash
 # Display parsed structure in tree format (default)
-procedure-test parse path/to/procedure.txt
+proctest parse path/to/procedure.txt
 
 # Write parsed structure to file
-procedure-test parse path/to/procedure.txt --output parsed-output.txt
+proctest parse path/to/procedure.txt --output parsed-output.txt
 
 # Output as JSON for programmatic processing
-procedure-test parse path/to/procedure.txt --format json
+proctest parse path/to/procedure.txt --format json
 
 # Output as YAML for readability
-procedure-test parse path/to/procedure.txt --format yaml
+proctest parse path/to/procedure.txt --format yaml
 
 # Combine output file with format
-procedure-test parse path/to/procedure.txt --output ast.json --format json
+proctest parse path/to/procedure.txt --output ast.json --format json
 ```
 
 #### Output Formats
@@ -4460,15 +4647,15 @@ Duration: 45.3s
 **Skip Prerequisite Checks**:
 ```bash
 # Skip all prerequisite checks (useful for debugging)
-procedure-test run symfony.txt --skip-prerequisites
+proctest run symfony.txt --skip-prerequisites
 
 # Run even if prerequisites aren't met (will likely fail)
-procedure-test run symfony.txt --ignore-prerequisites
+proctest run symfony.txt --ignore-prerequisites
 ```
 
 **Configuration File**:
 ```javascript
-// procedure-test.config.js
+// proctest.config.js
 export default {
   prerequisites: {
     check: true, // Enable prerequisite checking (default: true)
@@ -4614,7 +4801,7 @@ UI testing requires two types of configuration to handle frequently-changing UIs
 **1. Navigation Mappings** - Map generic phrases to automation steps:
 
 ```javascript
-// In procedure-test.config.js
+// In proctest.config.js
 ui: {
   navigationMappings: [
     {
@@ -4638,7 +4825,7 @@ When the documentation says "In Atlas, go to the Clusters page for your project"
 **2. User Values** - Map generic references to actual values:
 
 ```javascript
-// In procedure-test.config.js
+// In proctest.config.js
 ui: {
   userValues: {
     'your project': process.env.ATLAS_PROJECT_NAME || 'MyTestProject',
@@ -5266,12 +5453,12 @@ Summary:
 
 ```json
 {
-  "name": "procedure-test",
+  "name": "proctest",
   "version": "0.1.0",
   "description": "Testing framework for documentation procedures",
   "main": "dist/index.js",
   "bin": {
-    "procedure-test": "dist/cli/index.js"
+    "proctest": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",
