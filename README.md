@@ -87,7 +87,7 @@ This is a spike project to explore feasibility and design. The documents in this
 
 ```bash
 # Install
-npm install -g @mongodb/proctest
+npm install -g @grove-platform/proctest
 
 # Test a single procedure
 proctest test content/atlas/source/tutorial/getting-started.txt
