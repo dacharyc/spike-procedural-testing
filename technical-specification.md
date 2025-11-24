@@ -1,5 +1,5 @@
 # Technical Specification: Procedural Testing Framework
-## Option 5: Hybrid + Plugin Ready Architecture
+## Convention + Configuration and Plugin-Ready Architecture
 
 **Version**: 1.0
 **Date**: 2025-11-24
@@ -9,15 +9,15 @@
 
 ## Table of Contents
 
-1. [Executive Summary](#executive-summary)
-2. [System Architecture](#system-architecture)
-3. [Component Specifications](#component-specifications)
-4. [Data Models](#data-models)
-5. [API Specifications](#api-specifications)
-6. [Implementation Plan](#implementation-plan)
-7. [Testing Strategy](#testing-strategy)
-8. [Risk Assessment](#risk-assessment)
-9. [Appendices](#appendices)
+1. [Executive Summary](#1-executive-summary)
+2. [System Architecture](#2-system-architecture)
+3. [Component Specifications](#3-component-specifications)
+4. [Data Models](#4-data-models)
+5. [API Specifications](#5-api-specifications)
+6. [Implementation Plan](#6-implementation-plan)
+7. [Testing Strategy](#7-testing-strategy)
+8. [Risk Assessment](#8-risk-assessment)
+9. [Appendices](#9-appendices)
 
 ---
 
@@ -40,7 +40,7 @@ This technical specification defines the implementation details for a procedural
 - **Runtime**: Node.js 24+ (LTS)
 - **Language**: TypeScript 5.x
 - **Package Manager**: npm (standard with Node.js)
-- **Testing**: Vitest (fast, TypeScript-native)
+- **Testing**: Jest (team familiarity, organizational consistency)
 - **CLI Framework**: Commander.js
 - **Parser**: Custom RST parser (with future MDX support)
 - **Process Execution**: Node.js `child_process` with proper isolation
@@ -126,8 +126,13 @@ This technical specification defines the implementation details for a procedural
    ↓
 4. For each test file:
    a. Parser converts RST → AST
-   b. Orchestrator extracts procedures
-   c. For each procedure:
+   b. Orchestrator extracts procedures and expands variants:
+      - If procedure contains tabs → generate test case for each tab
+        (tab content + any content outside tabs)
+      - If procedure contains composable tutorial → generate test case for each selection
+        (selection-specific content + general content, properly interleaved)
+      - Each variant is a complete, executable procedure
+   c. For each procedure variant:
       i.   Resolver interpolates placeholders
       ii.  Executor runs code blocks
       iii. Cleanup Registry tracks resources
@@ -223,7 +228,7 @@ procedure-test/
 │   └── fixtures/                 # Test fixtures
 ├── package.json
 ├── tsconfig.json
-├── vitest.config.ts
+├── jest.config.ts
 └── README.md
 ```
 
@@ -742,9 +747,120 @@ export interface Reporter {
    */
   finalize(): Promise<void>;
 }
+```
 
+**Variant Reporting Strategy**:
+
+Each variant (tab or composable tutorial selection) is treated as a **separate test case** with its own result. This provides:
+
+1. **Clear pass/fail status per variant** - If Python passes but Node.js fails, it's immediately visible
+2. **Individual timing** - Each variant has its own duration
+3. **Separate error reporting** - Failures are isolated to specific variants
+4. **Standard test filtering** - Users can filter by variant name (e.g., `--grep python`)
+
+**Human-Readable Output Example**:
+
+```
+Testing: testdata/install-driver.txt
+
+✓ Install MongoDB Driver (Python)
+  Duration: 2.3s
+  Steps: 3/3 passed
+
+✗ Install MongoDB Driver (Node.js)
+  Duration: 1.8s
+  Steps: 2/3 passed
+  Error in Step 2: npm install failed
+    Command: npm install mongodb
+    Exit code: 1
+    stderr: npm ERR! network timeout
+
+✓ Install MongoDB Driver (Java)
+  Duration: 3.1s
+  Steps: 3/3 passed
+
+Summary:
+  3 test cases (1 base procedure with 3 variants)
+  2 passed, 1 failed
+  Total duration: 7.2s
+```
+
+**JSON Output Example**:
+
+```json
+{
+  "results": [
+    {
+      "procedure": { "name": "Install MongoDB Driver" },
+      "variant": {
+        "type": "tab",
+        "id": "python",
+        "label": "Python",
+        "baseProcedureName": "Install MongoDB Driver"
+      },
+      "success": true,
+      "duration": 2300,
+      "steps": [...]
+    },
+    {
+      "procedure": { "name": "Install MongoDB Driver" },
+      "variant": {
+        "type": "tab",
+        "id": "nodejs",
+        "label": "Node.js",
+        "baseProcedureName": "Install MongoDB Driver"
+      },
+      "success": false,
+      "duration": 1800,
+      "error": {...}
+    }
+  ],
+  "summary": {
+    "totalProcedures": 3,
+    "passedProcedures": 2,
+    "failedProcedures": 1,
+    "variantSummary": {
+      "totalBaseProcedures": 1,
+      "totalVariants": 3,
+      "variantsByType": {
+        "tabs": 3,
+        "composableTutorials": 0
+      }
+    }
+  }
+}
+```
+
+**JUnit XML Output**:
+
+Each variant becomes a separate `<testcase>` with the variant label in the name:
+
+```xml
+<testsuite name="testdata/install-driver.txt" tests="3" failures="1">
+  <testcase name="Install MongoDB Driver (Python)" time="2.3" />
+  <testcase name="Install MongoDB Driver (Node.js)" time="1.8">
+    <failure message="npm install failed">
+      Command: npm install mongodb
+      Exit code: 1
+      stderr: npm ERR! network timeout
+    </failure>
+  </testcase>
+  <testcase name="Install MongoDB Driver (Java)" time="3.1" />
+</testsuite>
+```
+
+**Key Design Decisions**:
+
+✅ **Each variant is a separate test case** - Simplifies reporting and filtering
+✅ **Variant info is included in result** - Enables grouping and aggregation if needed
+✅ **Test name includes variant label** - Clear identification in all output formats
+✅ **Summary includes variant statistics** - Optional detailed breakdown for analysis
+✅ **No special aggregation in PoC** - Keep it simple; add rollup views in future if needed
+
+```typescript
 export interface ProcedureResult {
   procedure: ProcedureNode;
+  variant?: VariantInfo; // Present if this is a variant (tab or composable tutorial selection)
   success: boolean;
   skipped: boolean; // True if skipped due to unmet prerequisites
   skipReason?: string; // Reason for skipping
@@ -752,6 +868,13 @@ export interface ProcedureResult {
   duration: number;
   steps: StepResult[];
   error?: TestError;
+}
+
+export interface VariantInfo {
+  type: 'tab' | 'composable-tutorial';
+  id: string; // tabid or selection value
+  label: string; // Human-readable label (e.g., "Python", "Node.js Driver")
+  baseProcedureName: string; // Original procedure name without variant suffix
 }
 
 export interface StepResult {
@@ -819,14 +942,25 @@ export interface ErrorDetails {
 }
 
 export interface TestSummary {
-  totalProcedures: number;
+  totalProcedures: number; // Total test cases (including variants)
   passedProcedures: number;
   failedProcedures: number;
+  skippedProcedures: number;
   totalSteps: number;
   passedSteps: number;
   failedSteps: number;
   totalDuration: number;
   results: ProcedureResult[];
+
+  // Variant-specific summary (optional, for detailed reporting)
+  variantSummary?: {
+    totalBaseProcedures: number; // Number of unique procedures (before variant expansion)
+    totalVariants: number; // Total number of variants across all procedures
+    variantsByType: {
+      tabs: number;
+      composableTutorials: number;
+    };
+  };
 }
 ```
 
@@ -1135,7 +1269,92 @@ export class ConfigurationManager {
 }
 ```
 
-#### 3.2.4 Example Configuration with UI Testing
+#### 3.2.4 Environment Variable Loading (Native Node.js Support)
+
+Node.js 24+ provides native `.env` file support, eliminating the need for external dependencies like `dotenv`.
+
+**CLI Usage** (Recommended):
+
+```bash
+# Load .env file automatically
+node --env-file=.env dist/cli.js run testdata/example.txt
+
+# Load .env file if it exists (no error if missing)
+node --env-file-if-exists=.env dist/cli.js run testdata/example.txt
+
+# Load multiple .env files (later files override earlier ones)
+node --env-file=.env --env-file=.env.local dist/cli.js run testdata/example.txt
+```
+
+**Programmatic Usage**:
+
+```typescript
+// Load .env file and populate process.env
+try {
+  process.loadEnvFile('.env');
+  console.log('Loaded .env file');
+} catch (error) {
+  console.warn('.env file not found, using existing environment');
+}
+
+// Parse .env file content without loading into process.env
+import { parseEnv } from 'node:util';
+import { readFileSync } from 'node:fs';
+
+const envContent = readFileSync('.env', 'utf-8');
+const envVars = parseEnv(envContent);
+console.log('Parsed environment variables:', envVars);
+```
+
+**Configuration Manager Integration**:
+
+```typescript
+export class ConfigurationManager {
+  async load(): Promise<Configuration> {
+    const config = await this.loadDefaults();
+
+    // Load .env files using native Node.js support
+    for (const envFile of config.envFiles) {
+      try {
+        process.loadEnvFile(envFile);
+        console.log(`Loaded environment from ${envFile}`);
+      } catch (error) {
+        // File doesn't exist or can't be read - continue
+        console.warn(`Could not load ${envFile}: ${error.message}`);
+      }
+    }
+
+    // Continue with rest of configuration loading...
+    return config;
+  }
+}
+```
+
+**Benefits**:
+- ✅ No external dependencies required
+- ✅ Built-in to Node.js 24+ runtime
+- ✅ CLI option for easy integration with npm scripts
+- ✅ Programmatic API for advanced use cases
+- ✅ Multiple file support with override behavior
+
+**Example .env file**:
+
+```bash
+# MongoDB Connection
+MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/test
+
+# Atlas API Credentials
+ATLAS_API_PUBLIC_KEY=your-public-key
+ATLAS_API_PRIVATE_KEY=your-private-key
+ATLAS_PROJECT_ID=your-project-id
+
+# Test Configuration
+ATLAS_PROJECT_NAME=MyTestProject
+ATLAS_CLUSTER_NAME=Cluster0
+ATLAS_ORG_NAME=MyOrg
+```
+
+#### 3.2.5 Example Configuration with UI Testing
 
 **Complete Configuration Example** (`procedure-test.config.js`):
 
@@ -1292,7 +1511,7 @@ export default {
 };
 ```
 
-#### 3.2.5 Shared Navigation Mappings
+#### 3.2.6 Shared Navigation Mappings
 
 **Organizational Pattern**: For teams with multiple documentation repositories or pages, navigation mappings can be maintained centrally and shared across the organization.
 
@@ -1511,6 +1730,840 @@ export default {
 
 ---
 
+### 3.3 RST Parser Implementation
+
+The framework uses a **lightweight, targeted parsing approach** that parses only the RST features needed for procedural testing, rather than building a complete RST syntax tree. This approach is based on the proven regex-based parser used in MongoDB's existing code-example-tooling project.
+
+#### 3.3.1 Parsing Philosophy
+
+**What We Parse** (Minimal Set):
+- ✅ Specific directives: `code-block`, `literalinclude`, `procedure`, `step`, `tabs`, `include`
+- ✅ Directive options (`:language:`, `:start-after:`, `:end-before:`, `:tabid:`, etc.)
+- ✅ Directive content (indented blocks)
+- ✅ Ordered lists (procedures as numbered lists)
+- ✅ Sub-lists (sub-procedures within steps)
+- ✅ Inline roles for URL validation (`:doc:`, `:ref:`, external links)
+- ✅ Inline roles for UI testing (`:guilabel:`)
+- ✅ Source constants from snooty.toml (`{+variable-name+}`)
+
+**What We Ignore** (Everything Else):
+- ❌ Full RST syntax tree
+- ❌ Tables, footnotes, citations
+- ❌ Most inline roles (except those listed above)
+- ❌ Complex directives we don't test (`:figure:`, `:image:`, etc.)
+- ❌ Comments, most substitutions
+
+**Risk Mitigation**:
+- Parse errors are handled gracefully (skip unparseable content, warn user)
+- Comprehensive tests using actual MongoDB documentation files
+- Incremental approach: start with minimal set, add features as needed
+
+#### 3.3.2 Core Parser Interface
+
+```typescript
+export class LightweightRSTParser implements Parser {
+  // Regular expressions for directive detection
+  private static readonly DIRECTIVES = {
+    CODE_BLOCK: /^\.\.\s+code-block::\s*(.*)$/,
+    LITERAL_INCLUDE: /^\.\.\s+literalinclude::\s+(.+)$/,
+    PROCEDURE: /^\.\.\s+procedure::\s*$/,
+    STEP: /^\.\.\s+step::\s*(.*)$/,
+    TABS: /^\.\.\s+tabs::\s*$/,
+    TAB: /^\.\.\s+tab::\s*(.*)$/,
+    INCLUDE: /^\.\.\s+include::\s+(.+)$/,
+    IO_CODE_BLOCK: /^\.\.\s+io-code-block::\s*$/,
+    INPUT: /^\.\.\s+input::\s*(.*)$/,
+    OUTPUT: /^\.\.\s+output::\s*(.*)$/
+  };
+
+  // Regular expressions for list detection
+  private static readonly LISTS = {
+    ORDERED: /^(\d+)\.\s+(.*)$/,
+    SUB_ORDERED: /^([a-z])\.\s+(.*)$/,
+    UNORDERED: /^[*\-+]\s+(.*)$/
+  };
+
+  // Regular expressions for inline roles
+  private static readonly INLINE_ROLES = {
+    GUILABEL: /:guilabel:`([^`]+)`/g,
+    DOC: /:doc:`([^`<]+)(?:\s*<([^>]+)>)?`/g,
+    REF: /:ref:`([^`<]+)(?:\s*<([^>]+)>)?`/g,
+    EXTERNAL_LINK: /`([^`<]+)\s*<(https?:\/\/[^>]+)>`_/g,
+    SIMPLE_LINK: /(https?:\/\/[^\s]+)/g
+  };
+
+  // Regular expressions for source constants
+  private static readonly SOURCE_CONSTANT = /\{\+([^}]+)\+\}/g;
+
+  // Regular expression for directive options
+  private static readonly OPTION = /^\s+:([^:]+):\s*(.*)$/;
+
+  parse(content: string, context: ParserContext): Promise<DocumentAST> {
+    const scanner = new LineScanner(content.split('\n'));
+    const procedures: ProcedureNode[] = [];
+    const urls: URLNode[] = [];
+
+    while (scanner.hasNext()) {
+      const line = scanner.next();
+      const trimmed = line.trim();
+
+      // Parse procedures (directive form)
+      if (this.isProcedureDirective(trimmed)) {
+        procedures.push(this.parseProcedureDirective(scanner, context));
+        continue;
+      }
+
+      // Parse procedures (ordered list form)
+      if (this.isOrderedListStart(trimmed)) {
+        procedures.push(this.parseProcedureList(scanner, line, context));
+        continue;
+      }
+
+      // Extract URLs from inline roles
+      urls.push(...this.extractURLsFromLine(trimmed, context));
+    }
+
+    return {
+      type: 'document',
+      filePath: context.filePath,
+      procedures,
+      urls,
+      metadata: {
+        sourceFormat: 'rst',
+        parsedAt: new Date().toISOString()
+      }
+    };
+  }
+
+  canParse(filePath: string): boolean {
+    const ext = path.extname(filePath).toLowerCase();
+    return ['.rst', '.txt'].includes(ext);
+  }
+
+  getSupportedExtensions(): string[] {
+    return ['.rst', '.txt'];
+  }
+}
+```
+
+#### 3.3.3 Directive Parsing
+
+**Code Block Directive**:
+
+```typescript
+private parseCodeBlock(scanner: LineScanner, language: string): CodeBlockNode {
+  const options = this.parseDirectiveOptions(scanner);
+  const content = this.extractIndentedContent(scanner);
+
+  return {
+    type: 'code-block',
+    language: language || options.language || '',
+    content,
+    options,
+    location: scanner.getLocation()
+  };
+}
+```
+
+**Literal Include Directive**:
+
+```typescript
+private parseLiteralInclude(scanner: LineScanner, filePath: string, context: ParserContext): CodeBlockNode {
+  const options = this.parseDirectiveOptions(scanner);
+
+  // Resolve the include path (handles MongoDB-specific conventions)
+  const resolvedPath = this.resolveIncludePath(context.filePath, filePath);
+
+  // Read and extract content
+  let content = fs.readFileSync(resolvedPath, 'utf-8');
+
+  // Handle start-after option
+  if (options['start-after']) {
+    const startIdx = content.indexOf(options['start-after']);
+    if (startIdx !== -1) {
+      const lineEnd = content.indexOf('\n', startIdx);
+      content = content.substring(lineEnd + 1);
+    }
+  }
+
+  // Handle end-before option
+  if (options['end-before']) {
+    const endIdx = content.indexOf(options['end-before']);
+    if (endIdx !== -1) {
+      const lineStart = content.lastIndexOf('\n', endIdx);
+      content = content.substring(0, lineStart);
+    }
+  }
+
+  // Handle dedent option
+  if (options.dedent !== undefined) {
+    content = this.dedentContent(content);
+  }
+
+  return {
+    type: 'code-block',
+    language: options.language || this.inferLanguageFromPath(resolvedPath),
+    content: content.trim(),
+    options,
+    location: scanner.getLocation()
+  };
+}
+```
+
+#### 3.3.4 Tabs Directive Parsing
+
+Tabs are critical for MongoDB documentation as they represent mutually-exclusive steps or procedures. The parser must handle tabs and allow users to select which tab to test.
+
+**Tabs Directive Structure**:
+
+```rst
+.. tabs::
+
+   .. tab:: Python
+      :tabid: python
+
+      1. Install the driver:
+
+         .. code-block:: bash
+
+            pip install pymongo
+
+      2. Connect to MongoDB:
+
+         .. code-block:: python
+
+            from pymongo import MongoClient
+            client = MongoClient("mongodb://localhost:27017")
+
+   .. tab:: Node.js
+      :tabid: nodejs
+
+      1. Install the driver:
+
+         .. code-block:: bash
+
+            npm install mongodb
+
+      2. Connect to MongoDB:
+
+         .. code-block:: javascript
+
+            const { MongoClient } = require('mongodb');
+            const client = new MongoClient("mongodb://localhost:27017");
+```
+
+**Parser Implementation**:
+
+```typescript
+private parseTabsDirective(scanner: LineScanner, context: ParserContext): TabsNode {
+  const options = this.parseDirectiveOptions(scanner);
+  const tabs: TabNode[] = [];
+
+  // Parse nested tab directives
+  while (scanner.hasNext()) {
+    const line = scanner.peek();
+    const trimmed = line.trim();
+
+    // Check for tab directive
+    const tabMatch = LightweightRSTParser.DIRECTIVES.TAB.exec(trimmed);
+    if (tabMatch) {
+      scanner.next(); // Consume the tab line
+      tabs.push(this.parseTabDirective(scanner, tabMatch[1], context));
+      continue;
+    }
+
+    // If we hit a non-indented line, we're done with tabs
+    if (trimmed && !line.startsWith(' ') && !line.startsWith('\t')) {
+      break;
+    }
+
+    scanner.next();
+  }
+
+  return {
+    type: 'tabs',
+    tabs,
+    options,
+    location: scanner.getLocation()
+  };
+}
+
+private parseTabDirective(scanner: LineScanner, title: string, context: ParserContext): TabNode {
+  const options = this.parseDirectiveOptions(scanner);
+  const tabId = options.tabid || this.slugify(title);
+
+  // Parse tab content (can contain procedures, steps, code blocks, etc.)
+  const content = this.parseTabContent(scanner, context);
+
+  return {
+    type: 'tab',
+    tabId,
+    title: title.trim(),
+    content,
+    options,
+    location: scanner.getLocation()
+  };
+}
+
+private parseTabContent(scanner: LineScanner, context: ParserContext): ContentNode[] {
+  const content: ContentNode[] = [];
+  let baseIndent = -1;
+
+  while (scanner.hasNext()) {
+    const line = scanner.peek();
+    const trimmed = line.trim();
+
+    // Calculate indentation
+    const indent = line.length - line.trimLeft().length;
+
+    // Set base indent from first content line
+    if (baseIndent === -1 && trimmed) {
+      baseIndent = indent;
+    }
+
+    // If we've dedented back to or past the base level, we're done
+    if (trimmed && baseIndent !== -1 && indent < baseIndent) {
+      break;
+    }
+
+    // Check for nested directives or lists within tab
+    if (this.isProcedureDirective(trimmed)) {
+      scanner.next();
+      content.push(this.parseProcedureDirective(scanner, context));
+      continue;
+    }
+
+    if (this.isOrderedListStart(trimmed)) {
+      content.push(this.parseProcedureList(scanner, line, context));
+      continue;
+    }
+
+    if (this.isCodeBlockDirective(trimmed)) {
+      scanner.next();
+      const match = LightweightRSTParser.DIRECTIVES.CODE_BLOCK.exec(trimmed);
+      content.push(this.parseCodeBlock(scanner, match![1]));
+      continue;
+    }
+
+    scanner.next();
+  }
+
+  return content;
+}
+```
+
+**Tab Testing Strategy**:
+
+Tabs and composable tutorials represent mutually-exclusive content that must be **interpolated** with general content. The framework automatically:
+
+1. **Identifies all variants** (tabs or selections)
+2. **Interpolates** variant-specific content with general content
+3. **Generates complete test cases** for each variant
+
+**Example 1: Tabs within a procedure**
+
+```rst
+1. Install the MongoDB driver:
+
+   .. tabs::
+
+      .. tab:: Python
+         :tabid: python
+
+         .. code-block:: bash
+
+            pip install pymongo
+
+      .. tab:: Node.js
+         :tabid: nodejs
+
+         .. code-block:: bash
+
+            npm install mongodb
+
+2. Connect to your database:
+
+   .. code-block:: javascript
+
+      const client = new MongoClient(uri);
+```
+
+**Generated test cases**:
+
+```
+Test Case 1: "Procedure Name (Python)"
+  Step 1: Install the MongoDB driver
+    - Execute: pip install pymongo
+  Step 2: Connect to your database
+    - Execute: const client = new MongoClient(uri);
+
+Test Case 2: "Procedure Name (Node.js)"
+  Step 1: Install the MongoDB driver
+    - Execute: npm install mongodb
+  Step 2: Connect to your database
+    - Execute: const client = new MongoClient(uri);
+```
+
+**Example 2: Composable tutorial with interleaved content**
+
+```rst
+.. composable-tutorial::
+   :options: language
+   :defaults: nodejs
+
+   .. selected-content::
+      :selections: nodejs
+
+      1. Install Node.js driver:
+
+         .. code-block:: bash
+
+            npm install mongodb
+
+   .. selected-content::
+      :selections: python
+
+      1. Install Python driver:
+
+         .. code-block:: bash
+
+            pip install pymongo
+
+   2. Create a connection string:
+
+      .. code-block:: javascript
+
+         const uri = "mongodb://localhost:27017";
+
+   .. selected-content::
+      :selections: nodejs
+
+      3. Connect using Node.js:
+
+         .. code-block:: javascript
+
+            const client = new MongoClient(uri);
+
+   .. selected-content::
+      :selections: python
+
+      3. Connect using Python:
+
+         .. code-block:: python
+
+            client = MongoClient(uri)
+```
+
+**Generated test cases**:
+
+```
+Test Case 1: "Procedure Name (nodejs)"
+  Step 1: Install Node.js driver
+    - Execute: npm install mongodb
+  Step 2: Create a connection string
+    - Execute: const uri = "mongodb://localhost:27017";
+  Step 3: Connect using Node.js
+    - Execute: const client = new MongoClient(uri);
+
+Test Case 2: "Procedure Name (python)"
+  Step 1: Install Python driver
+    - Execute: pip install pymongo
+  Step 2: Create a connection string
+    - Execute: const uri = "mongodb://localhost:27017";
+  Step 3: Connect using Python
+    - Execute: client = MongoClient(uri)
+```
+
+**Key Points**:
+- ✅ General content (outside tabs/selected-content) is included in **all** test cases
+- ✅ Variant-specific content is included only in matching test cases
+- ✅ Content order is preserved (interleaved correctly)
+- ✅ Step numbering is recalculated for each variant
+- ✅ No user configuration needed - automatic interpolation
+- ✅ Users can filter with `--grep nodejs` to run specific variants
+
+**Variant Expansion Algorithm**:
+
+```typescript
+function expandProcedureVariants(procedure: ProcedureNode): ProcedureVariant[] {
+  // 1. Identify all variants (tabs or composable tutorial selections)
+  const variants = identifyVariants(procedure);
+
+  if (variants.length === 0) {
+    // No variants - return single test case with all content
+    return [{ name: procedure.name, content: procedure.content }];
+  }
+
+  // 2. For each variant, interpolate content
+  return variants.map(variant => {
+    const interpolatedContent = [];
+
+    for (const node of procedure.content) {
+      if (node.type === 'tabs') {
+        // Include only the matching tab's content
+        const matchingTab = node.tabs.find(tab => tab.tabId === variant.id);
+        if (matchingTab) {
+          interpolatedContent.push(...matchingTab.content);
+        }
+      } else if (node.type === 'selected-content') {
+        // Include only if selections match
+        if (node.selections.includes(variant.selection)) {
+          interpolatedContent.push(...node.content);
+        }
+      } else {
+        // General content - include in all variants
+        interpolatedContent.push(node);
+      }
+    }
+
+    return {
+      name: `${procedure.name} (${variant.label})`,
+      content: interpolatedContent,
+      variant: variant.id
+    };
+  });
+}
+
+function identifyVariants(procedure: ProcedureNode): Variant[] {
+  // Check for composable tutorial
+  const composable = findComposableTutorial(procedure);
+  if (composable) {
+    return composable.selections.map(sel => ({
+      id: sel.id,
+      label: sel.label,
+      selection: sel.value
+    }));
+  }
+
+  // Check for tabs
+  const tabs = findTabs(procedure);
+  if (tabs.length > 0) {
+    return tabs[0].tabs.map(tab => ({
+      id: tab.tabId,
+      label: tab.title,
+      selection: tab.tabId
+    }));
+  }
+
+  return [];
+}
+```
+
+#### 3.3.5 Inline Role Parsing for URL Validation
+
+The parser extracts URLs from inline roles for validation (Phase 3: URL testable actions).
+
+**Supported Inline Roles**:
+
+```typescript
+private extractURLsFromLine(line: string, context: ParserContext): URLNode[] {
+  const urls: URLNode[] = [];
+
+  // Extract :doc: references (internal documentation links)
+  // Example: :doc:`/tutorial/install-mongodb`
+  const docMatches = line.matchAll(LightweightRSTParser.INLINE_ROLES.DOC);
+  for (const match of docMatches) {
+    const docPath = match[2] || match[1]; // Use explicit path if provided
+    urls.push({
+      type: 'url',
+      url: this.resolveDocReference(docPath, context),
+      source: 'doc-role',
+      location: { line: context.currentLine, column: match.index }
+    });
+  }
+
+  // Extract :ref: references (internal cross-references)
+  // Example: :ref:`installation-guide`
+  const refMatches = line.matchAll(LightweightRSTParser.INLINE_ROLES.REF);
+  for (const match of refMatches) {
+    const refName = match[2] || match[1];
+    urls.push({
+      type: 'url',
+      url: this.resolveRefReference(refName, context),
+      source: 'ref-role',
+      location: { line: context.currentLine, column: match.index }
+    });
+  }
+
+  // Extract external links
+  // Example: `MongoDB Atlas <https://cloud.mongodb.com>`_
+  const externalMatches = line.matchAll(LightweightRSTParser.INLINE_ROLES.EXTERNAL_LINK);
+  for (const match of externalMatches) {
+    urls.push({
+      type: 'url',
+      url: match[2],
+      linkText: match[1],
+      source: 'external-link',
+      location: { line: context.currentLine, column: match.index }
+    });
+  }
+
+  // Extract simple URLs
+  // Example: https://www.mongodb.com/docs
+  const simpleMatches = line.matchAll(LightweightRSTParser.INLINE_ROLES.SIMPLE_LINK);
+  for (const match of simpleMatches) {
+    urls.push({
+      type: 'url',
+      url: match[1],
+      source: 'simple-link',
+      location: { line: context.currentLine, column: match.index }
+    });
+  }
+
+  return urls;
+}
+
+private resolveDocReference(docPath: string, context: ParserContext): string {
+  // Resolve :doc: reference to actual file path
+  // Example: :doc:`/tutorial/install-mongodb` -> /path/to/source/tutorial/install-mongodb.txt
+  const sourceDir = this.findSourceDirectory(context.filePath);
+  const cleanPath = docPath.startsWith('/') ? docPath.substring(1) : docPath;
+
+  // Try common extensions
+  for (const ext of ['.txt', '.rst', '']) {
+    const fullPath = path.join(sourceDir, cleanPath + ext);
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  throw new Error(`Doc reference not found: ${docPath}`);
+}
+
+private resolveRefReference(refName: string, context: ParserContext): string {
+  // Resolve :ref: reference by searching for .. _refName: labels
+  // This is more complex and may require scanning multiple files
+  // For now, return the ref name and validate it exists during execution
+  return `ref:${refName}`;
+}
+```
+
+#### 3.3.6 Helper Utilities
+
+**Indented Content Extraction**:
+
+```typescript
+private extractIndentedContent(scanner: LineScanner): string {
+  const lines: string[] = [];
+  let baseIndent = -1;
+
+  while (scanner.hasNext()) {
+    const line = scanner.peek();
+
+    // Empty lines are part of content
+    if (line.trim() === '') {
+      lines.push('');
+      scanner.next();
+      continue;
+    }
+
+    // Calculate indentation
+    const indent = line.length - line.trimLeft().length;
+
+    // First content line establishes base indentation
+    if (baseIndent === -1) {
+      baseIndent = indent;
+    }
+
+    // If less indented than base, we're done
+    if (indent < baseIndent) {
+      break;
+    }
+
+    // Add line with base indentation removed
+    lines.push(line.substring(baseIndent));
+    scanner.next();
+  }
+
+  return lines.join('\n').trim();
+}
+```
+
+**Directive Options Parsing**:
+
+```typescript
+private parseDirectiveOptions(scanner: LineScanner): Record<string, string> {
+  const options: Record<string, string> = {};
+
+  while (scanner.hasNext()) {
+    const line = scanner.peek();
+    const trimmed = line.trim();
+
+    // Check if this is an option line
+    const optionMatch = LightweightRSTParser.OPTION.exec(line);
+    if (optionMatch) {
+      const optionName = optionMatch[1].trim();
+      const optionValue = optionMatch[2].trim();
+      options[optionName] = optionValue;
+      scanner.next();
+      continue;
+    }
+
+    // If we hit a blank line, skip it
+    if (trimmed === '') {
+      scanner.next();
+      continue;
+    }
+
+    // If the line is not indented and not an option, we're done
+    if (line.length > 0 && line[0] !== ' ' && line[0] !== '\t') {
+      break;
+    }
+
+    // If we have indented content (not an option), we're done with options
+    if (line.length > 0 && (line[0] === ' ' || line[0] === '\t') && !optionMatch) {
+      break;
+    }
+
+    scanner.next();
+  }
+
+  return options;
+}
+```
+
+**Include Path Resolution** (MongoDB-specific conventions):
+
+```typescript
+private resolveIncludePath(currentFilePath: string, includePath: string): string {
+  // Find the source directory by walking up from current file
+  const sourceDir = this.findSourceDirectory(currentFilePath);
+
+  // Clean the include path (remove leading slash if present)
+  const cleanPath = includePath.startsWith('/') ? includePath.substring(1) : includePath;
+
+  // Special handling for steps/ includes
+  // Convert /includes/steps/filename.rst to /includes/steps-filename.yaml
+  if (cleanPath.includes('steps/')) {
+    const stepsPath = this.resolveStepsInclude(sourceDir, cleanPath);
+    if (stepsPath) return stepsPath;
+  }
+
+  // Special handling for extracts/ includes (ref-based YAML content blocks)
+  if (cleanPath.includes('extracts/')) {
+    const extractsPath = this.resolveRefBasedInclude(sourceDir, cleanPath, 'extracts');
+    if (extractsPath) return extractsPath;
+  }
+
+  // Construct the full path
+  let fullPath = path.join(sourceDir, cleanPath);
+
+  // If the file exists as-is, return it
+  if (fs.existsSync(fullPath)) {
+    return fullPath;
+  }
+
+  // If the path doesn't have an extension, try adding .rst
+  if (path.extname(cleanPath) === '') {
+    fullPath = fullPath + '.rst';
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  throw new Error(`Include file not found: ${includePath}`);
+}
+
+private findSourceDirectory(filePath: string): string {
+  // Walk up from current file looking for snooty.toml or source/ directory
+  let dir = path.dirname(filePath);
+
+  while (dir !== path.dirname(dir)) { // Not at root
+    // Check for snooty.toml
+    if (fs.existsSync(path.join(dir, 'snooty.toml'))) {
+      // Source directory is typically ./source relative to snooty.toml
+      const sourceDir = path.join(dir, 'source');
+      if (fs.existsSync(sourceDir)) {
+        return sourceDir;
+      }
+      return dir;
+    }
+
+    // Check if current directory is named 'source'
+    if (path.basename(dir) === 'source') {
+      return dir;
+    }
+
+    dir = path.dirname(dir);
+  }
+
+  // Fallback to directory containing the file
+  return path.dirname(filePath);
+}
+```
+
+**Dedent Content**:
+
+```typescript
+private dedentContent(content: string): string {
+  const lines = content.split('\n');
+  if (lines.length === 0) return content;
+
+  // Find minimum indentation (ignoring empty lines)
+  let minIndent = Infinity;
+  for (const line of lines) {
+    if (line.trim() === '') continue;
+    const indent = line.length - line.trimLeft().length;
+    minIndent = Math.min(minIndent, indent);
+  }
+
+  if (minIndent === Infinity || minIndent === 0) {
+    return content;
+  }
+
+  // Remove common indentation from all lines
+  const dedentedLines = lines.map(line => {
+    if (line.trim() === '') return '';
+    return line.substring(minIndent);
+  });
+
+  return dedentedLines.join('\n');
+}
+```
+
+#### 3.3.7 Line Scanner Utility
+
+```typescript
+class LineScanner {
+  private lines: string[];
+  private position: number = 0;
+
+  constructor(lines: string[]) {
+    this.lines = lines;
+  }
+
+  hasNext(): boolean {
+    return this.position < this.lines.length;
+  }
+
+  next(): string {
+    return this.lines[this.position++];
+  }
+
+  peek(): string {
+    return this.lines[this.position];
+  }
+
+  peekAhead(offset: number): string | undefined {
+    return this.lines[this.position + offset];
+  }
+
+  getPosition(): number {
+    return this.position;
+  }
+
+  getLocation(): SourceLocation {
+    return {
+      line: this.position + 1,
+      column: 0,
+      file: '' // Set by parser
+    };
+  }
+}
+```
+
+---
+
 ## 4. Data Models
 
 ### 4.1 AST Node Types
@@ -1570,6 +2623,20 @@ export interface ComposableTutorialNode {
   defaults: string[];
   selections: SelectedContentNode[];
   location: SourceLocation;
+}
+
+export interface URLNode {
+  type: 'url';
+  url: string;
+  linkText?: string;
+  source: 'doc-role' | 'ref-role' | 'external-link' | 'simple-link';
+  location: SourceLocation;
+}
+
+export interface SourceLocation {
+  line: number;
+  column: number;
+  file: string;
 }
 
 export interface SelectedContentNode {
@@ -1774,12 +2841,12 @@ export class KotlinExecutorPlugin implements Plugin {
 
 ## 6. Implementation Plan
 
-### 6.1 Phase 1: PoC (Weeks 1-4)
+### 6.1 Phase 1: PoC
 
 **Goal**: Prove the concept with minimal viable functionality
 
-#### Week 1: Foundation
-- [ ] Project setup (TypeScript, Vitest, Commander.js)
+#### Milestone 1: Foundation
+- [ ] Project setup (TypeScript, Jest, Commander.js)
 - [ ] Define core interfaces (Parser, Resolver, Executor, Reporter)
 - [ ] Implement Configuration Manager with convention-based discovery
 - [ ] Implement basic CLI (test command, argument parsing)
@@ -1791,7 +2858,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - CLI can parse arguments and load configuration
 - Unit tests for configuration loading
 
-#### Week 2: Parsing
+#### Milestone 2: Parsing
 - [ ] Implement RST tokenizer
 - [ ] Implement RST AST builder
 - [ ] Handle `procedure` and `step` directives
@@ -1812,7 +2879,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - `parse` command for debugging and validation
 - Unit tests for parser with real examples
 
-#### Week 3: Resolution & Execution
+#### Milestone 3: Resolution & Execution
 - [ ] Implement ExactEnvResolver (exact environment variable match)
 - [ ] Implement FuzzyEnvResolver (fuzzy matching with suggestions)
 - [ ] Implement SnootyConstantResolver (snooty.toml constants)
@@ -1831,7 +2898,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - State persistence within steps
 - Unit tests for resolvers and executors
 
-#### Week 4: Prerequisites, Orchestration & Reporting
+#### Milestone 4: Prerequisites, Orchestration & Reporting
 - [ ] Implement PrerequisiteChecker for software requirements
 - [ ] Implement PrerequisiteChecker for environment requirements
 - [ ] Add prerequisite validation to test execution flow
@@ -1858,11 +2925,11 @@ export class KotlinExecutorPlugin implements Plugin {
 - ✅ Provides helpful error messages
 - ✅ Cleans up test databases
 
-### 6.2 Phase 2: Production-Ready (Weeks 5-8)
+### 6.2 Phase 2: Production-Ready
 
 **Goal**: Make it production-ready for technical writers
 
-#### Week 5: Configuration & Advanced Parsing
+#### Milestone 5: Configuration & Advanced Parsing
 - [ ] Implement optional configuration file support
 - [ ] Implement `--init` command for guided setup
 - [ ] Add configuration validation with helpful errors
@@ -1876,7 +2943,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - Better error messages
 - Configuration validation
 
-#### Week 6: Additional Executors & Features
+#### Milestone 6: Additional Executors & Features
 - [ ] Implement CodeExecutor for PHP
 - [ ] Implement CLIExecutor for mongosh (CLI element type)
 - [ ] Implement CLIExecutor for atlas-cli (CLI element type)
@@ -1891,7 +2958,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - Runtime validation
 - Dry-run and list modes
 
-#### Week 7: Reporting & Output
+#### Milestone 7: Reporting & Output
 - [ ] Implement JSONReporter
 - [ ] Implement JUnitReporter (for CI integration)
 - [ ] Add `--output` flag for file output
@@ -1903,7 +2970,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - CI integration support
 - Better progress feedback
 
-#### Week 8: Polish & Documentation
+#### Milestone 8: Polish & Documentation
 - [ ] Comprehensive user documentation
 - [ ] API documentation
 - [ ] Troubleshooting guide
@@ -1923,11 +2990,11 @@ export class KotlinExecutorPlugin implements Plugin {
 - ✅ Multiple output formats available
 - ✅ Comprehensive documentation
 
-### 6.3 Phase 3: Advanced Features (Weeks 9-12)
+### 6.3 Phase 3: Advanced Features
 
 **Goal**: Add advanced features based on user feedback
 
-#### Week 9-10: Composable Tutorials
+#### Milestone 9: Composable Tutorials
 - [ ] Parse `composable-tutorial` directive
 - [ ] Parse `selected-content` directive
 - [ ] Handle composable dependencies
@@ -1938,7 +3005,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - Composable tutorial support
 - Selection-based testing
 
-#### Week 11: Additional Testable Action Types
+#### Milestone 10: Additional Testable Action Types
 - [ ] Implement UIExecutor (Playwright/Puppeteer)
 - [ ] Parse `:guilabel:` roles and detect UI actions
 - [ ] Implement UI navigation mapping system
@@ -1957,23 +3024,24 @@ export class KotlinExecutorPlugin implements Plugin {
 - URL action type support (link validation)
 - Enhanced error reporting with screenshots
 
-#### Week 12: Advanced Cleanup & Plugin Architecture
+#### Milestone 11: Advanced Cleanup & Polish
 - [ ] Implement database cleanup detection
 - [ ] Implement collection cleanup detection
 - [ ] Improve file cleanup
 - [ ] Add cleanup hooks
-- [ ] Implement plugin loading system (if needed)
-- [ ] Create plugin API documentation (if needed)
+- [ ] Performance optimization (parser caching, lazy loading)
+- [ ] Documentation polish and examples
 
 **Deliverables**:
 - Automatic resource detection
 - Better cleanup strategies
-- Plugin system foundation (if justified by user needs)
+- Performance improvements
+- Comprehensive documentation
 
 **Success Criteria**:
 - ✅ Composable tutorials work correctly
 - ✅ Cleanup is reliable and comprehensive
-- ✅ Plugin system available if needed
+- ✅ Framework is well-documented and performant
 
 ---
 
@@ -1981,7 +3049,7 @@ export class KotlinExecutorPlugin implements Plugin {
 
 ### 7.1 Unit Testing
 
-**Framework**: Vitest (fast, TypeScript-native, compatible with Jest)
+**Framework**: Jest with ts-jest (team familiarity, organizational consistency)
 
 **Coverage Goals**:
 - 80%+ code coverage overall
@@ -2183,20 +3251,41 @@ describe('Performance', () => {
 ### 8.1 Technical Risks
 
 #### Risk 1: RST Parsing Complexity
-**Severity**: High
-**Probability**: Medium
-**Impact**: Could delay PoC by 1-2 weeks
+**Severity**: Low (reduced from High)
+**Probability**: Low (reduced from Medium)
+**Impact**: Minimal - proven approach
 
-**Description**: RST has complex syntax with many edge cases. Parsing all directives correctly may be more difficult than anticipated.
+**Description**: ~~RST has complex syntax with many edge cases. Parsing all directives correctly may be more difficult than anticipated.~~ **MITIGATED**: Using lightweight, targeted parsing approach based on proven regex-based parser from MongoDB's code-example-tooling project.
 
-**Mitigation**:
-- Start with minimal directive support (procedure, step, code-block)
-- Use existing RST parsers as reference (docutils, restructuredtext-parse)
-- Test against real documentation files early
-- Accept that some edge cases may not work in PoC
+**Approach**:
+- Parse only the RST features needed for procedural testing (code-block, literalinclude, procedure, step, tabs, include)
+- Use regex-based line-by-line scanning with indentation tracking
+- Port proven logic from existing Go implementation to TypeScript
+- Handle MongoDB-specific conventions (steps files, extracts, source constants)
+- Gracefully handle parse errors (skip unparseable content, warn user)
 
-**Contingency**:
-- Use existing RST parser library if custom parser proves too complex
+**What We Parse**:
+- ✅ Directives: `code-block`, `literalinclude`, `procedure`, `step`, `tabs`, `include`
+- ✅ Directive options (`:language:`, `:start-after:`, `:end-before:`, `:tabid:`)
+- ✅ Ordered lists (procedures as numbered lists)
+- ✅ Sub-lists (sub-procedures within steps)
+- ✅ Inline roles for URL validation (`:doc:`, `:ref:`, external links)
+- ✅ Inline roles for UI testing (`:guilabel:`)
+- ✅ Source constants (`{+variable-name+}`)
+
+**What We Ignore**:
+- ❌ Full RST syntax tree
+- ❌ Tables, footnotes, citations
+- ❌ Most inline roles (except those listed above)
+- ❌ Complex directives we don't test
+
+**Testing Strategy**:
+- Test against real MongoDB documentation files from the start
+- Comprehensive test suite using actual .txt files from testdata/
+- Handle edge cases incrementally as discovered
+
+**Contingency** (unlikely to be needed):
+- Fall back to snooty-parser for complex cases (heavyweight but comprehensive)
 - Limit PoC scope to most common directives
 
 #### Risk 2: Placeholder Resolution Accuracy
@@ -2254,7 +3343,7 @@ describe('Performance', () => {
 
 #### Risk 5: Too Complex for Writers
 **Severity**: High
-**Probability**: Low (with Option 5)
+**Probability**: Low
 **Impact**: Low adoption, tool abandonment
 
 **Description**: If the tool requires too much configuration or technical knowledge, writers won't use it.
@@ -2284,8 +3373,9 @@ describe('Performance', () => {
 - Profile and optimize hot paths
 
 **Contingency**:
-- Implement parallel execution (Phase 3)
-- Provide incremental testing mode
+- Provide incremental testing mode (only test changed files)
+- Add watch mode for continuous testing during development
+- Optimize test startup time (lazy loading, faster imports)
 
 ### 8.3 Maintenance Risks
 
@@ -2294,11 +3384,11 @@ describe('Performance', () => {
 **Probability**: High (planned)
 **Impact**: Requires parser refactoring
 
-**Description**: MongoDB plans to migrate from RST to MDX in 6-12 months.
+**Description**: MongoDB plans to migrate from RST to MDX in the future.
 
 **Mitigation**:
 - **Interface-driven design** (Option 5 key benefit)
-- Parser abstraction from day one
+- Parser abstraction from the start
 - Test parser interface with mock implementations
 - Plan for dual-parser support period
 
@@ -2314,14 +3404,16 @@ describe('Performance', () => {
 **Description**: Different documentation teams may have conflicting requirements.
 
 **Mitigation**:
-- **Plugin-ready architecture** (Option 5 key benefit)
+- **Interface-driven architecture** enables future extensibility
 - Configuration system for customization
 - Clear prioritization of features
 - Community contribution guidelines
+- Built-in support for common use cases
 
 **Contingency**:
-- Implement plugin system earlier (Phase 2 instead of Phase 3)
-- Teams can create custom plugins for specific needs
+- Add new built-in executors/resolvers as needed
+- Extend configuration system for team-specific customization
+- If extensibility needs become critical, implement plugin system at that time
 
 ### 8.4 Risk Summary Matrix
 
@@ -2769,7 +3861,7 @@ function collectPlaceholders(ast: DocumentAST): string[] {
 
 #### Integration with Implementation Plan
 
-Add to **Week 2: Parsing** deliverables:
+Add to **Milestone 2: Parsing** deliverables:
 - [ ] Implement `parse` command with tree, JSON, and YAML output formats
 - [ ] Add placeholder detection and reporting in parse output
 - [ ] Add summary statistics to parse output
@@ -3419,9 +4511,9 @@ export default {
 
 ### Appendix D: Testable Action Types and Detection
 
-The framework supports six types of testable actions, each with specific detection rules and execution strategies.
+The framework supports seven types of testable actions, each with specific detection rules and execution strategies.
 
-#### C.1 Action Type Overview
+#### D.1 Action Type Overview
 
 | Action Type | Detection Method | Execution Strategy | PoC Phase |
 |-------------|------------------|-------------------|-----------|
@@ -3429,10 +4521,11 @@ The framework supports six types of testable actions, each with specific detecti
 | **Shell** | `code-block` with `shell`/`bash`/`sh` language | Shell execution | Phase 1 |
 | **UI** | `:guilabel:` role in text | UI automation (Playwright/Puppeteer) | Phase 3 |
 | **CLI** | `code-block` with `mongosh` or atlas-cli commands | Tool-specific execution | Phase 2 |
-| **API** | HTTP method keywords in code blocks | HTTP client | Phase 3 |
+| **API** | `curl` commands targeting Atlas Admin API | HTTP client (axios/fetch) | Phase 3 |
+| **Download** | `curl` commands with `-o` or `-O` flags | HTTP client with file writing | Phase 2 |
 | **URL** | Links in documentation | HTTP HEAD/GET request | Phase 3 |
 
-#### C.2 Code Testable Actions
+#### D.2 Code Testable Actions
 
 **Detection**:
 ```rst
@@ -3456,7 +4549,7 @@ The framework supports six types of testable actions, each with specific detecti
 
 **Execution**: Language-specific executor (JavaScriptExecutor, PythonExecutor, PHPExecutor)
 
-#### C.3 Shell Testable Actions
+#### D.3 Shell Testable Actions
 
 **Detection**:
 ```rst
@@ -3477,7 +4570,7 @@ The framework supports six types of testable actions, each with specific detecti
 
 **Execution**: ShellExecutor (spawns shell process)
 
-#### C.4 UI Testable Actions
+#### D.4 UI Testable Actions
 
 **Detection**:
 ```rst
@@ -3637,7 +4730,7 @@ Suggestions:
   - Or set environment variable: ATLAS_PROJECT_NAME=MyProject
 ```
 
-#### C.5 CLI Testable Actions
+#### D.5 CLI Testable Actions
 
 **Detection** (mongosh):
 ```rst
@@ -3683,7 +4776,7 @@ Suggestions:
 - Code block starts with `atlas ` → atlas-cli
 - Otherwise → regular shell or code
 
-#### C.6 API Testable Actions
+#### D.6 API Testable Actions
 
 **Important**: API testable actions are specifically for the **MongoDB Atlas Admin API only**, not all curl commands.
 
@@ -3748,7 +4841,7 @@ Suggestions:
 - File downloads: `curl -o file.tar.gz https://example.com/file.tar.gz` → Download action
 - Generic HTTP requests: `curl https://example.com` → Shell action (unless Atlas Admin API)
 
-#### C.7 Download Testable Actions
+#### D.7 Download Testable Actions
 
 **Important**: Downloads may take significant time and subsequent steps often depend on download completion.
 
@@ -3848,7 +4941,7 @@ async executeDownload(action: DownloadTestableAction): Promise<ExecutionResult> 
 }
 ```
 
-#### C.8 URL Testable Actions
+#### D.8 URL Testable Actions
 
 **Detection**:
 ```rst
@@ -3881,7 +4974,7 @@ Navigate to https://cloud.mongodb.com to access Atlas.
 - RST link syntax: `` `text <url>`_ ``
 - Bare URLs in text: `https://...` or `http://...`
 
-#### C.9 Execution Priority and Phasing
+#### D.9 Execution Priority and Phasing
 
 **Phase 1 (PoC)**: Code and Shell only
 - Focus on most common testable actions
@@ -3897,7 +4990,7 @@ Navigate to https://cloud.mongodb.com to access Atlas.
 - Atlas Admin API request validation (https://cloud.mongodb.com/api/atlas/)
 - URL accessibility checks (link validation)
 
-#### C.10 Implementation Example: Action Detection
+#### D.10 Implementation Example: Action Detection
 
 ```typescript
 /**
@@ -4131,7 +5224,7 @@ function parseUIInteraction(node: RSTNode): UITestableAction {
 }
 ```
 
-#### C.11 Reporting by Action Type
+#### D.11 Reporting by Action Type
 
 **Example Output**:
 ```
@@ -4169,7 +5262,7 @@ Summary:
 
 ---
 
-### Appendix D: Package.json Example
+### Appendix E: Package.json Example
 
 ```json
 {
@@ -4183,8 +5276,9 @@ Summary:
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest",
-    "test:coverage": "vitest --coverage",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts"
   },
@@ -4192,29 +5286,64 @@ Summary:
   "author": "MongoDB Documentation Team",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "commander": "^11.0.0",
-    "dotenv": "^16.0.0",
     "glob": "^10.0.0",
     "toml": "^3.0.0",
     "yaml": "^2.3.0"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.0",
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
-    "@vitest/coverage-v8": "^1.0.0",
     "eslint": "^8.0.0",
+    "jest": "^29.7.0",
     "prettier": "^3.0.0",
-    "typescript": "^5.0.0",
-    "vitest": "^1.0.0"
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.0"
   }
 }
 ```
 
-### Appendix B: TypeScript Configuration
+### Appendix F: Jest Configuration
+
+```typescript
+// jest.config.ts
+import type { Config } from 'jest';
+
+const config: Config = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/src', '<rootDir>/tests'],
+  testMatch: ['**/__tests__/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/**/*.test.ts',
+    '!src/**/*.spec.ts'
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80
+    }
+  },
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1'
+  },
+  clearMocks: true,
+  restoreMocks: true
+};
+
+export default config;
+```
+
+### Appendix G: TypeScript Configuration
 
 ```json
 {
@@ -4233,14 +5362,14 @@ Summary:
     "declarationMap": true,
     "sourceMap": true,
     "moduleResolution": "node",
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "jest"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
 ```
 
-### Appendix C: Example Implementation - JavaScript Executor
+### Appendix H: Example Implementation - JavaScript Executor
 
 ```typescript
 import { spawn } from 'child_process';
@@ -4376,7 +5505,7 @@ export class JavaScriptExecutor implements Executor {
 }
 ```
 
-### Appendix D: Example Implementation - Fuzzy Resolver
+### Appendix I: Example Implementation - Fuzzy Resolver
 
 ```typescript
 import { PlaceholderResolver, ResolverContext } from '../interfaces/resolver';
@@ -4480,37 +5609,23 @@ export class FuzzyEnvResolver implements PlaceholderResolver {
 }
 ```
 
-### Appendix E: Key Dependencies Rationale
+### Appendix J: Key Dependencies Rationale
 
 | Dependency | Purpose | Rationale |
 |------------|---------|-----------|
 | **commander** | CLI argument parsing | Industry standard, well-maintained, TypeScript support |
-| **dotenv** | .env file loading | Standard for environment variable management |
 | **glob** | File pattern matching | Reliable, widely used for test discovery |
 | **toml** | Parse snooty.toml | Standard TOML parser for Node.js |
 | **yaml** | YAML output for parse command | Standard YAML parser/stringifier, human-readable debug output |
-| **vitest** | Testing framework | Fast, TypeScript-native, modern alternative to Jest |
+| **jest** | Testing framework | Team familiarity, organizational consistency, mature ecosystem |
+| **ts-jest** | TypeScript support for Jest | Standard TypeScript preprocessor for Jest |
 | **typescript** | Type safety | Required for maintainability and developer experience |
 
-**Minimal Dependencies**: Only 5 runtime dependencies keeps the tool lightweight and reduces maintenance burden.
+**Minimal Dependencies**: Minimal dependencies keeps the tool lightweight and reduces maintenance burden.
 
-### Appendix F: Open Questions for Discussion
+**Note on .env file support**: Node.js 24+ provides native `.env` file support via `process.loadEnvFile()` and the `--env-file` CLI option, eliminating the need for the external `dotenv` package.
 
-1. **Parser Strategy**: Should we use an existing RST parser library or build custom? Custom gives more control but takes longer.
-
-2. **State Persistence**: Should variables persist across steps by default, or only within steps? Current spec says within steps only.
-
-3. **Parallel Execution**: Should this be in Phase 2 or Phase 3? May be needed earlier for large documentation sets.
-
-4. **Plugin System Timing**: Should we implement plugin loading in Phase 2 or wait for Phase 3? Depends on team customization needs.
-
-5. **MDX Parser**: Should we start MDX parser work in Phase 2 to prepare for migration, or wait until migration is imminent?
-
-6. **Cleanup Strategy**: Should cleanup be opt-out (default enabled) or opt-in (default disabled)? Current spec is opt-out.
-
-7. **Error Handling**: Should unresolved placeholders fail tests by default, or just warn? Current spec fails by default.
-
-8. **Configuration Format**: Should we support both JSON and JS config files, or just JS for flexibility? Current spec supports both.
+**Note on Jest vs Vitest**: While Vitest offers faster test execution and better TypeScript support out-of-the-box, Jest was chosen for team familiarity and organizational consistency. The MongoDB documentation team already uses Jest for other testing tooling, making it easier to share knowledge and maintain consistency across projects.
 
 ---
 
@@ -4522,20 +5637,18 @@ This technical specification defines a comprehensive implementation plan for the
 - ✅ Interface-driven design enables future extensibility
 - ✅ Zero-config operation for 90% of use cases
 - ✅ Progressive configuration for complex scenarios
-- ✅ 12-week implementation plan with clear milestones
+- ✅ Phased implementation plan with clear milestones
 - ✅ Comprehensive testing strategy
 - ✅ Low overall risk with strong mitigation strategies
 
 **Next Steps**:
-1. Review and discuss open questions
-2. Finalize any architectural decisions
-3. Set up project repository and development environment
-4. Begin Week 1 implementation (Foundation)
+1. Review and approve technical specification
+2. Set up project repository and development environment
+3. Begin Milestone 1 implementation (Foundation)
 
 **Questions or Concerns?**
 This specification is a living document. Please provide feedback on:
 - Technical approach
-- Implementation timeline
-- Open questions
+- Implementation plan
 - Any missing details or concerns
 
