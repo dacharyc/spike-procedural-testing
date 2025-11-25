@@ -124,25 +124,31 @@ database.
 
          Save your connection string in a secure location.
 
-   .. step:: Initialize a Symfony Project
+   .. step:: Create a Symfony Project
 
-      Run the following command in your terminal to create a skeleton Symfony project called
-      ``restaurants``:
+      a. Run the following command in your terminal to create a skeleton Symfony
+         project called ``restaurants``:
 
-      .. code-block:: bash
+         .. code-block:: bash
 
-         composer create-project symfony/skeleton restaurants
+            composer create-project symfony/skeleton restaurants
+
+      #. Run the following command in your terminal to change to the new
+         project directory:
+
+         .. code-block:: bash
+
+            cd restaurants
 
    .. step:: Install PHP Driver and Doctrine ODM
 
-      Enter your project directory, then add the MongoDB PHP driver and the
-      Doctrine ODM bundle to your application. The bundle integrates
-      the ODM library into Symfony so that you can read from and write objects
-      to MongoDB. Installing the bundle also automatically adds the driver to
-      your project. To learn more, see the :ref:`php-symfony-resources` section
-      of this guide.
+      Add the MongoDB PHP driver and the Doctrine ODM bundle to your application.
+      The bundle integrates the ODM library into Symfony so that you can read from
+      and write objects to MongoDB. Installing the bundle also automatically adds
+      the driver to your project. To learn more, see the :ref:`php-symfony-resources`
+      section of this guide.
 
-      Run the following commands to install the ODM:
+      Run the following command to install the ODM:
 
       .. code-block:: bash
 
@@ -208,9 +214,9 @@ database.
       Set Environment Variables
       ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-      In the root directory, navigate to the ``.env`` file and define the
-      following environment variables to set your connection string and target
-      database:
+      In the project root directory (``restaurants/``), replace the contents of
+      the ``.env`` file with the following code to define your connection string
+      and target database:
 
       .. code-block:: none
          :caption: .env
@@ -274,8 +280,8 @@ database.
 
    .. step:: Start your Symfony Application
 
-      Run the following command from the application root directory to start
-      your PHP built-in web server:
+      From the project root directory (``restaurants/``), run the following
+      command to start your PHP built-in web server:
 
       .. code-block:: bash
 
