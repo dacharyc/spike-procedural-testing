@@ -407,6 +407,8 @@ export interface CodeTestableAction extends BaseTestableAction {
   code: string;
   options: CodeBlockOptions;
   placeholders?: string[];
+  executionMode?: 'direct' | 'ide'; // 'ide' when prose says "From your IDE, run..."
+  filePath?: string; // Path to file when executionMode is 'ide'
 }
 
 /**
@@ -1012,6 +1014,7 @@ export interface Configuration {
   // Execution
   executors?: ExecutorConfig;
   timeout?: number;
+  ideExecution?: IDEExecutionConfig;  // Handle "From your IDE, run" instructions
 
   // UI Testing (Phase 3)
   ui?: UITestingConfig;
@@ -1053,6 +1056,21 @@ export interface LanguageExecutorConfig {
   version?: string;
   timeout?: number;
   env?: Record<string, string>;
+  ideCommand?: string; // Custom command for "From your IDE, run" instructions
+}
+
+/**
+ * IDE Execution Configuration
+ * Handles "From your IDE, run the file" instructions
+ */
+export interface IDEExecutionConfig {
+  // Custom commands by language (overrides defaults)
+  commands?: Record<string, string>;
+
+  // Skip IDE execution entirely (mark as manual verification)
+  skip?: boolean;
+
+  // Available interpolation variables: {filename}, {basename}, {className}
 }
 
 /**
@@ -3109,6 +3127,8 @@ export class KotlinExecutorPlugin implements Plugin {
 - [ ] Implement per-procedure temp directory creation
 - [ ] Implement CodeExecutor for JavaScript (Node.js)
 - [ ] Implement CodeExecutor for Python
+- [ ] Implement IDE execution detection and default command mapping
+- [ ] Implement IDE execution command interpolation ({filename}, {className}, etc.)
 - [ ] Implement ShellExecutor
 - [ ] Implement state accumulation within steps
 
@@ -3118,6 +3138,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - File operations (create, replace, append)
 - Per-procedure working directory management
 - Code execution for JavaScript, Python
+- IDE-based execution with convention-over-configuration defaults
 - Shell command execution
 - State persistence within steps
 - Unit tests for resolvers and executors
@@ -3373,6 +3394,183 @@ describe('JavaScriptExecutor', () => {
     const code = 'while(true) {}';
     const result = await executor.execute(code, { ...context, timeout: 1000 });
     expect(result.timedOut).toBe(true);
+  });
+});
+
+describe('CodeExecutor - IDE Execution', () => {
+  it('should detect IDE execution from prose', () => {
+    const content = `
+.. step:: Create a file named CreateIndex.java
+
+   .. literalinclude:: /includes/CreateIndex.java
+      :language: java
+
+.. step:: Execute the code to create the index.
+
+   From your IDE, run the file to create the index.
+    `;
+
+    const ast = parser.parse(content, context);
+    const actions = detector.detectActions(ast);
+    const ideAction = actions.find(a => a.executionMode === 'ide');
+
+    expect(ideAction).toBeDefined();
+    expect(ideAction.actionType).toBe('code');
+    expect(ideAction.language).toBe('java');
+    expect(ideAction.executionMode).toBe('ide');
+    expect(ideAction.filePath).toBe('CreateIndex.java');
+  });
+
+  it('should use default command for Java', async () => {
+    const action: CodeTestableAction = {
+      actionType: 'code',
+      language: 'java',
+      code: 'public class CreateIndex { public static void main(String[] args) {} }',
+      executionMode: 'ide',
+      filePath: 'CreateIndex.java',
+      options: { executable: true }
+    };
+
+    const command = executor.resolveIDECommand(action, context);
+
+    expect(command).toBe('mvn compile exec:java -Dexec.mainClass="CreateIndex"');
+  });
+
+  it('should use custom command from config', async () => {
+    const customContext = {
+      ...context,
+      config: {
+        ...context.config,
+        ideExecution: {
+          commands: {
+            java: 'gradle run'
+          }
+        }
+      }
+    };
+
+    const action: CodeTestableAction = {
+      actionType: 'code',
+      language: 'java',
+      code: 'public class CreateIndex {}',
+      executionMode: 'ide',
+      filePath: 'CreateIndex.java',
+      options: { executable: true }
+    };
+
+    const command = executor.resolveIDECommand(action, customContext);
+
+    expect(command).toBe('gradle run');
+  });
+
+  it('should interpolate command variables', () => {
+    const action: CodeTestableAction = {
+      actionType: 'code',
+      language: 'cpp',
+      code: '#include <iostream>\nint main() {}',
+      executionMode: 'ide',
+      filePath: 'src/main.cpp',
+      options: { executable: true }
+    };
+
+    const command = executor.resolveIDECommand(action, context);
+
+    expect(command).toBe('g++ src/main.cpp -o main && ./main');
+  });
+
+  it('should extract class name from Java code', () => {
+    const code = `
+package com.example;
+
+public class MyIndexService {
+  public static void main(String[] args) {
+    System.out.println("Hello");
+  }
+}
+    `;
+
+    const className = executor.extractClassName(code, 'java');
+
+    expect(className).toBe('MyIndexService');
+  });
+
+  it('should extract class name from C# code', () => {
+    const code = `
+using System;
+
+namespace MyApp
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            Console.WriteLine("Hello");
+        }
+    }
+}
+    `;
+
+    const className = executor.extractClassName(code, 'csharp');
+
+    expect(className).toBe('Program');
+  });
+
+  it('should throw error for unsupported language without config', () => {
+    const action: CodeTestableAction = {
+      actionType: 'code',
+      language: 'rust',
+      code: 'fn main() {}',
+      executionMode: 'ide',
+      filePath: 'main.rs',
+      options: { executable: true }
+    };
+
+    expect(() => executor.resolveIDECommand(action, context)).toThrow(
+      'No default IDE command for rust'
+    );
+  });
+
+  it('should execute IDE action via ShellExecutor', async () => {
+    const action: CodeTestableAction = {
+      actionType: 'code',
+      language: 'python',
+      code: 'print("Hello from IDE")',
+      executionMode: 'ide',
+      filePath: 'test.py',
+      options: { executable: true }
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Hello from IDE');
+  });
+
+  it('should skip IDE execution when configured', async () => {
+    const skipContext = {
+      ...context,
+      config: {
+        ...context.config,
+        ideExecution: {
+          skip: true
+        }
+      }
+    };
+
+    const action: CodeTestableAction = {
+      actionType: 'code',
+      language: 'java',
+      code: 'public class Test {}',
+      executionMode: 'ide',
+      filePath: 'Test.java',
+      options: { executable: true }
+    };
+
+    const result = await executor.execute(action, skipContext);
+
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.message).toContain('IDE execution skipped');
   });
 });
 ```
@@ -5017,6 +5215,187 @@ proctest --keep-all-artifacts
 ```
 
 **Execution**: Language-specific executor (JavaScriptExecutor, PythonExecutor, PHPExecutor)
+
+---
+
+##### IDE-Based Code Execution
+
+Some procedures instruct readers to execute code "from your IDE" rather than providing explicit command-line instructions. This pattern:
+
+- Reflects real-world developer workflows (most developers use IDEs)
+- Avoids prescribing specific build tools (Maven vs Gradle, etc.)
+- Accommodates toolchain variations across environments
+
+**Detection Pattern**:
+
+Prose containing phrases like:
+- "From your IDE, run the file"
+- "In your IDE, execute the code"
+- "Using your IDE, run the application"
+
+**Example**:
+```rst
+.. step:: Create a new file named ``CreateIndex.java``.
+
+   .. literalinclude:: /includes/examples/CreateIndex.java
+      :language: java
+
+.. step:: Execute the code to create the index.
+
+   From your IDE, run the file to create the index.
+```
+
+**Parsed As**:
+```typescript
+{
+  actionType: 'code',
+  language: 'java',
+  code: '/* content from literalinclude */',
+  options: { executable: true },
+  executionMode: 'ide',  // Indicates IDE-based execution
+  filePath: 'CreateIndex.java',
+  location: { file: 'example.txt', startLine: 10, endLine: 20 }
+}
+```
+
+**Execution Strategy - Convention over Configuration**:
+
+The framework provides sensible default commands for each language, with optional user overrides:
+
+**Default IDE Commands** (Convention):
+```typescript
+const DEFAULT_IDE_COMMANDS: Record<string, string> = {
+  // Java - prefer Maven (most common in MongoDB docs)
+  java: 'mvn compile exec:java -Dexec.mainClass="{className}"',
+
+  // C# - use dotnet CLI
+  csharp: 'dotnet run',
+  cs: 'dotnet run',
+
+  // C/C++ - compile and run
+  cpp: 'g++ {filename} -o {basename} && ./{basename}',
+  c: 'gcc {filename} -o {basename} && ./{basename}',
+
+  // Python - direct execution
+  python: 'python {filename}',
+  py: 'python {filename}',
+
+  // Node.js - direct execution
+  javascript: 'node {filename}',
+  js: 'node {filename}',
+
+  // Go - go run
+  go: 'go run {filename}',
+};
+```
+
+**Configuration Override** (User Preference):
+```javascript
+// .proctest.js
+module.exports = {
+  ideExecution: {
+    commands: {
+      java: 'gradle run',  // User prefers Gradle over Maven
+      cpp: './build/my-app',  // Custom build output location
+    },
+
+    // Or skip IDE execution entirely (mark as manual verification)
+    skip: false,
+  }
+};
+```
+
+**Command Interpolation Variables**:
+- `{filename}` - Full file path (e.g., `src/CreateIndex.java`)
+- `{basename}` - Filename without extension (e.g., `CreateIndex`)
+- `{className}` - Extracted class name from Java/C# files (e.g., `CreateIndex`)
+
+**Implementation Example**:
+```typescript
+// src/executor/code-executor.ts
+export class CodeExecutor implements Executor {
+  private shellExecutor: ShellExecutor;
+
+  async execute(action: CodeTestableAction, context: ExecutionContext): Promise<ExecutionResult> {
+    // Handle IDE-based execution
+    if (action.executionMode === 'ide') {
+      const command = this.resolveIDECommand(action, context);
+
+      // Log what we're doing for transparency
+      console.log(`IDE execution: Using command: ${command}`);
+
+      // Execute using ShellExecutor
+      return await this.shellExecutor.execute({
+        actionType: 'shell',
+        command,
+        workingDirectory: context.workingDirectory
+      }, context);
+    }
+
+    // ... normal code execution (inline code blocks)
+  }
+
+  private resolveIDECommand(action: CodeTestableAction, context: ExecutionContext): string {
+    const language = action.language.toLowerCase();
+
+    // 1. Check user configuration first (convention over configuration)
+    const userCommand = context.config.ideExecution?.commands?.[language];
+
+    if (userCommand) {
+      return this.interpolateCommand(userCommand, action);
+    }
+
+    // 2. Fall back to sensible defaults
+    const defaultCommand = DEFAULT_IDE_COMMANDS[language];
+
+    if (!defaultCommand) {
+      throw new Error(
+        `No default IDE command for ${language}. ` +
+        `Configure in .proctest.js: ideExecution.commands.${language}`
+      );
+    }
+
+    return this.interpolateCommand(defaultCommand, action);
+  }
+
+  private interpolateCommand(template: string, action: CodeTestableAction): string {
+    const filename = action.filePath || 'unknown';
+    const basename = path.basename(filename, path.extname(filename));
+    const className = this.extractClassName(action.code, action.language);
+
+    return template
+      .replace(/{filename}/g, filename)
+      .replace(/{basename}/g, basename)
+      .replace(/{className}/g, className);
+  }
+
+  private extractClassName(code: string, language: string): string {
+    // Extract class name from Java/C# code
+    if (language === 'java' || language === 'csharp' || language === 'cs') {
+      const match = code.match(/(?:public\s+)?class\s+(\w+)/);
+      return match ? match[1] : 'Main';
+    }
+    return 'Main';
+  }
+}
+```
+
+**Reporting**:
+
+When IDE execution is used, the test report should clearly indicate:
+- ✅ The command that was executed
+- ✅ Whether it used default or custom configuration
+- ✅ The working directory
+
+Example output:
+```
+✓ Execute code to create index
+  IDE Execution: mvn compile exec:java -Dexec.mainClass="CreateIndex"
+  Working Directory: /tmp/proctest/runs/1234567890-create-index/
+  Duration: 2.3s
+```
+
+---
 
 #### D.4 Shell Testable Actions
 
