@@ -133,9 +133,11 @@ This technical specification defines the implementation details for a procedural
         (selection-specific content + general content, properly interleaved)
       - Each variant is a complete, executable procedure
    c. For each procedure variant:
-      i.   Resolver interpolates placeholders
-      ii.  Executor runs code blocks
-      iii. Cleanup Registry tracks resources
+      i.   Orchestrator creates per-procedure temp directory
+      ii.  Resolver interpolates placeholders
+      iii. Executor runs file operations (create/replace files)
+      iv.  Executor runs code blocks
+      v.   Cleanup Registry tracks resources (including temp directory)
    d. Reporter collects results
    ↓
 5. Reporter outputs final results
@@ -385,13 +387,14 @@ export type TestableAction =
   | CLITestableAction
   | APITestableAction
   | DownloadTestableAction
-  | URLTestableAction;
+  | URLTestableAction
+  | FileTestableAction;
 
 /**
  * Base interface for all testable actions
  */
 export interface BaseTestableAction {
-  actionType: 'code' | 'shell' | 'ui' | 'cli' | 'api' | 'download' | 'url';
+  actionType: 'code' | 'shell' | 'ui' | 'cli' | 'api' | 'download' | 'url' | 'file';
   location: SourceLocation;
 }
 
@@ -477,6 +480,22 @@ export interface URLTestableAction extends BaseTestableAction {
   url: string;
   expectedStatus?: number;
   description?: string;
+}
+
+/**
+ * File operation (create, replace, append)
+ * Detected when prose instructions describe file operations followed by literalinclude
+ * Examples:
+ * - "Create the Restaurant.php file in the src/Document directory and paste the following code"
+ * - "Replace the contents of your doctrine_mongodb.yaml file with the following code"
+ * - "Paste the following code into the index.html.twig file"
+ */
+export interface FileTestableAction extends BaseTestableAction {
+  actionType: 'file';
+  operation: 'create' | 'replace' | 'append';
+  path: string; // Relative path from working directory
+  content: string; // File content (from literalinclude or code block)
+  description?: string; // Human-readable description of the operation
 }
 
 export interface CodeBlockNode {
@@ -671,13 +690,21 @@ export interface URLExecutor extends Executor {
   canExecute(action: TestableAction): action is URLTestableAction;
 }
 
+/**
+ * Specialized executor for file operations
+ */
+export interface FileExecutor extends Executor {
+  canExecute(action: TestableAction): action is FileTestableAction;
+  getSupportedOperations(): Array<'create' | 'replace' | 'append'>;
+}
+
 export interface ExecutionContext {
   action: TestableAction;
   procedure: ProcedureNode;
   step: StepNode;
   subStep?: SubStepNode;
   environment: Record<string, string>;
-  workingDirectory: string;
+  workingDirectory: string; // Per-procedure temp directory: .proctest/runs/<timestamp>-<procedure-id>/
   timeout: number;
   state: ExecutionState;
   cleanup: CleanupRegistry;
@@ -1194,6 +1221,10 @@ export const DEFAULT_CONFIG: Configuration = {
     files: {
       enabled: true,
       paths: ['./temp/**']
+    },
+    workingDirectories: {
+      enabled: true, // Automatically clean up per-procedure temp directories
+      keepOnFailure: false // Set to true to preserve directories for debugging
     }
   },
 
@@ -3052,6 +3083,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - [ ] Handle ordered lists within steps (sub-procedures)
 - [ ] Detect and parse prerequisites/requirements sections
 - [ ] Handle `code-block`, `code`, `literalinclude` directives
+- [ ] Detect file operation prose patterns (create, replace, append)
 - [ ] Handle `include` directive for transclusion
 - [ ] Parse `snooty.toml` for constants
 - [ ] Implement `parse` command with tree, JSON, and YAML output formats
@@ -3062,6 +3094,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - RST parser that converts `.txt` files to AST
 - Support for procedures, steps, and sub-steps (ordered lists)
 - Prerequisite/requirement detection and parsing
+- File operation detection from prose + literalinclude
 - Transclusion support
 - `parse` command for debugging and validation
 - Unit tests for parser with real examples
@@ -3071,7 +3104,9 @@ export class KotlinExecutorPlugin implements Plugin {
 - [ ] Implement FuzzyEnvResolver (fuzzy matching with suggestions)
 - [ ] Implement SnootyConstantResolver (snooty.toml constants)
 - [ ] Implement LayeredResolver (combines all resolvers)
-- [ ] Implement testable action detection (Code and Shell types for PoC)
+- [ ] Implement testable action detection (File, Code, and Shell types for PoC)
+- [ ] Implement FileExecutor (create, replace, append operations)
+- [ ] Implement per-procedure temp directory creation
 - [ ] Implement CodeExecutor for JavaScript (Node.js)
 - [ ] Implement CodeExecutor for Python
 - [ ] Implement ShellExecutor
@@ -3080,6 +3115,8 @@ export class KotlinExecutorPlugin implements Plugin {
 **Deliverables**:
 - Placeholder resolution with fuzzy matching
 - Testable action detection and classification
+- File operations (create, replace, append)
+- Per-procedure working directory management
 - Code execution for JavaScript, Python
 - Shell command execution
 - State persistence within steps
@@ -3090,6 +3127,7 @@ export class KotlinExecutorPlugin implements Plugin {
 - [ ] Implement PrerequisiteChecker for environment requirements
 - [ ] Add prerequisite validation to test execution flow
 - [ ] Implement TestOrchestrator (coordinates prerequisite checking, parsing, resolution, execution)
+- [ ] Implement working directory cleanup in CleanupRegistry
 - [ ] Implement CleanupRegistry
 - [ ] Implement HumanReporter (human-friendly output with prerequisite results)
 - [ ] Implement error formatting with suggestions
@@ -3101,16 +3139,16 @@ export class KotlinExecutorPlugin implements Plugin {
 - Test skipping when prerequisites not met
 - Complete PoC that can test real procedures
 - Human-friendly error messages with prerequisite status
-- Automatic cleanup
+- Automatic cleanup (databases, collections, files, working directories)
 - Integration tests with testdata files
 - Demo video/documentation
 
 **Success Criteria**:
 - ✅ Can parse RST files from testdata/
-- ✅ Can execute JavaScript, Python, Shell code
+- ✅ Can create files and execute JavaScript, Python, Shell code
 - ✅ Resolves 80%+ of placeholders automatically
 - ✅ Provides helpful error messages
-- ✅ Cleans up test databases
+- ✅ Cleans up test databases and temp directories
 
 ### 6.2 Phase 2: Production-Ready
 
@@ -4698,12 +4736,13 @@ export default {
 
 ### Appendix D: Testable Action Types and Detection
 
-The framework supports seven types of testable actions, each with specific detection rules and execution strategies.
+The framework supports eight types of testable actions, each with specific detection rules and execution strategies.
 
 #### D.1 Action Type Overview
 
 | Action Type | Detection Method | Execution Strategy | PoC Phase |
 |-------------|------------------|-------------------|-----------|
+| **File** | Prose instructions + `literalinclude` | File system operations | Phase 1 |
 | **Code** | `code-block`, `code`, `literalinclude` directives | Language-specific runtime | Phase 1 |
 | **Shell** | `code-block` with `shell`/`bash`/`sh` language | Shell execution | Phase 1 |
 | **UI** | `:guilabel:` role in text | UI automation (Playwright/Puppeteer) | Phase 3 |
@@ -4712,7 +4751,250 @@ The framework supports seven types of testable actions, each with specific detec
 | **Download** | `curl` commands with `-o` or `-O` flags | HTTP client with file writing | Phase 2 |
 | **URL** | Links in documentation | HTTP HEAD/GET request | Phase 3 |
 
-#### D.2 Code Testable Actions
+#### D.2 File Testable Actions
+
+**Purpose**: Handle file creation, modification, and content replacement as described in procedural documentation.
+
+**Detection Patterns**:
+
+File operations are detected when prose instructions contain file operation keywords followed by a `literalinclude` directive or code block:
+
+1. **Create operation**:
+   ```rst
+   Create the ``Restaurant.php`` file in the ``src/Document`` directory and
+   paste the following code:
+
+   .. literalinclude:: /includes/php-frameworks/symfony/Restaurant.php
+      :caption: src/Document/Restaurant.php
+      :language: php
+   ```
+
+2. **Replace operation**:
+   ```rst
+   In the ``config/packages`` directory, replace the contents of your
+   ``doctrine_mongodb.yaml`` file with the following code:
+
+   .. literalinclude:: /includes/php-frameworks/symfony/doctrine_mongodb.yaml
+      :caption: config/packages/doctrine_mongodb.yaml
+      :language: yaml
+   ```
+
+3. **Append operation** (less common):
+   ```rst
+   Add the following code to the end of your ``index.js`` file:
+
+   .. code-block:: javascript
+
+      module.exports = app;
+   ```
+
+**Detection Keywords**:
+- **Create**: "Create the `<filename>` file", "Create a file named `<filename>`", "Create `<filename>`"
+- **Replace**: "Replace the contents of `<filename>`", "Replace `<filename>` with"
+- **Append**: "Add to `<filename>`", "Append to `<filename>`", "Add the following to `<filename>`"
+
+**Parsed As**:
+```typescript
+{
+  actionType: 'file',
+  operation: 'create',
+  path: 'src/Document/Restaurant.php',
+  content: '<?php\n\nnamespace App\\Document;\n\nuse Doctrine\\ODM\\MongoDB\\Mapping\\Annotations as MongoDB;\n\n...',
+  description: 'Create the Restaurant.php file in the src/Document directory',
+  location: { file: 'symfony.txt', startLine: 229, endLine: 235 }
+}
+```
+
+**Execution Strategy**:
+
+File operations are executed **before** code blocks in the same step:
+
+1. **Working Directory**: All file paths are relative to the per-procedure temp directory (`.proctest/runs/<timestamp>-<procedure-id>/`)
+2. **Directory Creation**: Parent directories are created automatically if they don't exist
+3. **Operation Execution**:
+   - `create`: Write content to file (fail if file already exists, unless overwrite is configured)
+   - `replace`: Overwrite existing file content (create if doesn't exist)
+   - `append`: Append content to existing file (create if doesn't exist)
+4. **Cleanup**: Files are automatically cleaned up when the temp directory is removed
+
+**Working Directory Changes**:
+
+Shell commands can change the working directory using `cd`, `mkdir`, etc. The ShellExecutor maintains the current working directory across shell commands within a step:
+
+1. **Initial Working Directory**: Set to per-procedure temp directory
+2. **Directory Changes Persist**: `cd` commands affect subsequent shell commands in the same step
+3. **Step Isolation**: Each step starts with the working directory from the end of the previous step
+4. **Common Patterns**:
+   ```rst
+   .. code-block:: bash
+
+      mkdir my-project
+      cd my-project
+      npm init -y
+   ```
+
+   Or as sub-steps:
+   ```rst
+   a. Create a new directory:
+
+      .. code-block:: bash
+
+         mkdir my-project
+
+   #. Change to the new directory:
+
+      .. code-block:: bash
+
+         cd my-project
+
+   #. Initialize the project:
+
+      .. code-block:: bash
+
+         npm init -y
+   ```
+
+**Implementation Note**: The ShellExecutor should execute all shell commands in the same shell session (or track `cwd` changes) to preserve directory context.
+
+**Implementation Example**:
+
+```typescript
+// src/executor/file-executor.ts
+export class FileExecutor implements Executor {
+  canExecute(action: TestableAction): action is FileTestableAction {
+    return action.actionType === 'file';
+  }
+
+  async execute(action: FileTestableAction, context: ExecutionContext): Promise<ExecutionResult> {
+    const startTime = Date.now();
+    const fullPath = path.join(context.workingDirectory, action.path);
+
+    try {
+      // Ensure parent directory exists
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+
+      switch (action.operation) {
+        case 'create':
+          // Fail if file exists (unless configured otherwise)
+          if (await this.fileExists(fullPath)) {
+            throw new Error(`File already exists: ${action.path}`);
+          }
+          await fs.writeFile(fullPath, action.content, 'utf-8');
+          break;
+
+        case 'replace':
+          await fs.writeFile(fullPath, action.content, 'utf-8');
+          break;
+
+        case 'append':
+          await fs.appendFile(fullPath, action.content, 'utf-8');
+          break;
+      }
+
+      return {
+        success: true,
+        duration: Date.now() - startTime,
+        output: `${action.operation} ${action.path} (${action.content.length} bytes)`
+      };
+    } catch (error) {
+      return {
+        success: false,
+        duration: Date.now() - startTime,
+        error: error.message,
+        stderr: error.stack
+      };
+    }
+  }
+
+  getSupportedTypes(): string[] {
+    return ['file'];
+  }
+
+  getSupportedOperations(): Array<'create' | 'replace' | 'append'> {
+    return ['create', 'replace', 'append'];
+  }
+
+  async validate(): Promise<ValidationResult> {
+    // File operations only require Node.js fs module (always available)
+    return { valid: true };
+  }
+
+  private async fileExists(path: string): Promise<boolean> {
+    try {
+      await fs.access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+```
+
+**Working Directory Management**:
+
+The Test Orchestrator creates a unique temp directory for each procedure:
+
+```typescript
+// src/orchestrator/test-orchestrator.ts
+async executeProcedure(procedure: ProcedureNode, config: Configuration): Promise<TestResult> {
+  // Create per-procedure temp directory
+  const timestamp = Date.now();
+  const procedureId = this.sanitizeProcedureId(procedure.title);
+  const workingDirectory = path.join(
+    config.workingDirectoryBase || '.proctest/runs',
+    `${timestamp}-${procedureId}`
+  );
+
+  await fs.mkdir(workingDirectory, { recursive: true });
+
+  // Register for cleanup
+  const cleanup = new CleanupRegistry(config.cleanup);
+  cleanup.registerDirectory(workingDirectory);
+
+  try {
+    // Execute procedure with this working directory
+    const context: ExecutionContext = {
+      workingDirectory,
+      cleanup,
+      // ... other context
+    };
+
+    // Execute file operations first, then code blocks
+    for (const step of procedure.steps) {
+      // File operations
+      for (const action of step.testableActions.filter(a => a.actionType === 'file')) {
+        await this.executeAction(action, context);
+      }
+
+      // Code/Shell/CLI operations
+      for (const action of step.testableActions.filter(a => a.actionType !== 'file')) {
+        await this.executeAction(action, context);
+      }
+    }
+
+  } finally {
+    // Cleanup temp directory (unless keepOnFailure is set and test failed)
+    if (config.cleanup.workingDirectories.enabled) {
+      const shouldKeep = !result.success && config.cleanup.workingDirectories.keepOnFailure;
+      if (!shouldKeep) {
+        await cleanup.execute();
+      }
+    }
+  }
+}
+```
+
+**CLI Flag for Debugging**:
+
+```bash
+# Keep temp directories on failure for debugging
+proctest --keep-artifacts
+
+# Keep all temp directories (success or failure)
+proctest --keep-all-artifacts
+```
+
+#### D.3 Code Testable Actions
 
 **Detection**:
 ```rst
@@ -4736,7 +5018,7 @@ The framework supports seven types of testable actions, each with specific detec
 
 **Execution**: Language-specific executor (JavaScriptExecutor, PythonExecutor, PHPExecutor)
 
-#### D.3 Shell Testable Actions
+#### D.4 Shell Testable Actions
 
 **Detection**:
 ```rst
@@ -4757,7 +5039,94 @@ The framework supports seven types of testable actions, each with specific detec
 
 **Execution**: ShellExecutor (spawns shell process)
 
-#### D.4 UI Testable Actions
+**Working Directory Handling**:
+
+The ShellExecutor must maintain working directory context across commands within a procedure:
+
+```typescript
+// src/executor/shell-executor.ts
+export class ShellExecutor implements Executor {
+  private currentWorkingDirectory: string;
+
+  async execute(action: ShellTestableAction, context: ExecutionContext): Promise<ExecutionResult> {
+    // Initialize working directory from context on first execution
+    if (!this.currentWorkingDirectory) {
+      this.currentWorkingDirectory = context.workingDirectory;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      // Execute command in current working directory
+      const result = await execAsync(action.command, {
+        cwd: this.currentWorkingDirectory,
+        env: { ...process.env, ...context.environment }
+      });
+
+      // Track directory changes (cd, pushd, etc.)
+      if (action.command.trim().startsWith('cd ')) {
+        const targetDir = action.command.replace(/^cd\s+/, '').trim();
+        this.currentWorkingDirectory = path.resolve(this.currentWorkingDirectory, targetDir);
+      }
+
+      return {
+        success: true,
+        duration: Date.now() - startTime,
+        output: result.stdout,
+        stderr: result.stderr
+      };
+    } catch (error) {
+      return {
+        success: false,
+        duration: Date.now() - startTime,
+        error: error.message,
+        stderr: error.stderr
+      };
+    }
+  }
+
+  // Reset working directory for new procedure
+  reset(workingDirectory: string): void {
+    this.currentWorkingDirectory = workingDirectory;
+  }
+}
+```
+
+**Common Patterns**:
+
+1. **Sequential directory operations**:
+   ```rst
+   .. code-block:: bash
+
+      mkdir my-project
+      cd my-project
+      npm init -y
+   ```
+
+2. **Sub-steps with directory changes**:
+   ```rst
+   a. Create a new directory:
+
+      .. code-block:: bash
+
+         mkdir csharp-create-index
+
+   #. Change to the new directory:
+
+      .. code-block:: bash
+
+         cd csharp-create-index
+
+   #. Initialize the project:
+
+      .. code-block:: bash
+
+         dotnet new console
+   ```
+
+**Note**: Directory changes persist across shell commands within the same procedure, but each procedure starts with a fresh working directory.
+
+#### D.5 UI Testable Actions
 
 **Detection**:
 ```rst
@@ -4917,7 +5286,7 @@ Suggestions:
   - Or set environment variable: ATLAS_PROJECT_NAME=MyProject
 ```
 
-#### D.5 CLI Testable Actions
+#### D.6 CLI Testable Actions
 
 **Detection** (mongosh):
 ```rst
@@ -4963,7 +5332,7 @@ Suggestions:
 - Code block starts with `atlas ` → atlas-cli
 - Otherwise → regular shell or code
 
-#### D.6 API Testable Actions
+#### D.7 API Testable Actions
 
 **Important**: API testable actions are specifically for the **MongoDB Atlas Admin API only**, not all curl commands.
 
@@ -5028,7 +5397,7 @@ Suggestions:
 - File downloads: `curl -o file.tar.gz https://example.com/file.tar.gz` → Download action
 - Generic HTTP requests: `curl https://example.com` → Shell action (unless Atlas Admin API)
 
-#### D.7 Download Testable Actions
+#### D.8 Download Testable Actions
 
 **Important**: Downloads may take significant time and subsequent steps often depend on download completion.
 
@@ -5128,7 +5497,7 @@ async executeDownload(action: DownloadTestableAction): Promise<ExecutionResult> 
 }
 ```
 
-#### D.8 URL Testable Actions
+#### D.9 URL Testable Actions
 
 **Detection**:
 ```rst
@@ -5161,11 +5530,12 @@ Navigate to https://cloud.mongodb.com to access Atlas.
 - RST link syntax: `` `text <url>`_ ``
 - Bare URLs in text: `https://...` or `http://...`
 
-#### D.9 Execution Priority and Phasing
+#### D.10 Execution Priority and Phasing
 
-**Phase 1 (PoC)**: Code and Shell only
+**Phase 1 (PoC)**: File, Code, and Shell
+- File operations (create, replace, append)
 - Focus on most common testable actions
-- Prove the concept with code execution
+- Prove the concept with code execution and file setup
 
 **Phase 2 (Production)**: Add CLI and Download
 - mongosh and atlas-cli support
@@ -5177,7 +5547,7 @@ Navigate to https://cloud.mongodb.com to access Atlas.
 - Atlas Admin API request validation (https://cloud.mongodb.com/api/atlas/)
 - URL accessibility checks (link validation)
 
-#### D.10 Implementation Example: Action Detection
+#### D.11 Implementation Example: Action Detection
 
 ```typescript
 /**
@@ -5411,7 +5781,7 @@ function parseUIInteraction(node: RSTNode): UITestableAction {
 }
 ```
 
-#### D.11 Reporting by Action Type
+#### D.12 Reporting by Action Type
 
 **Example Output**:
 ```
