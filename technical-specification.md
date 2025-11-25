@@ -3573,6 +3573,160 @@ namespace MyApp
     expect(result.message).toContain('IDE execution skipped');
   });
 });
+
+describe('FileExecutor - Strict Mode', () => {
+  it('should create file when it does not exist', async () => {
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'create',
+      path: 'src/config.js',
+      content: 'module.exports = {};',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(true);
+    expect(await fs.readFile('src/config.js', 'utf-8')).toBe('module.exports = {};');
+  });
+
+  it('should fail to create file when it already exists', async () => {
+    // Setup: Create file first
+    await fs.mkdir('src', { recursive: true });
+    await fs.writeFile('src/config.js', 'existing content', 'utf-8');
+
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'create',
+      path: 'src/config.js',
+      content: 'new content',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Cannot create file src/config.js: file already exists');
+    expect(result.error).toContain('A previous step already created this file');
+    expect(result.error).toContain('Change the operation to "replace"');
+  });
+
+  it('should replace file when it exists', async () => {
+    // Setup: Create file first
+    await fs.mkdir('config', { recursive: true });
+    await fs.writeFile('config/.env', 'OLD_VALUE=old', 'utf-8');
+
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'replace',
+      path: 'config/.env',
+      content: 'NEW_VALUE=new',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(true);
+    expect(await fs.readFile('config/.env', 'utf-8')).toBe('NEW_VALUE=new');
+  });
+
+  it('should fail to replace file when it does not exist', async () => {
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'replace',
+      path: '.env',
+      content: 'MONGODB_URI=mongodb://localhost',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Cannot replace contents of .env: file does not exist');
+    expect(result.error).toContain('A missing "create .env" step earlier in the procedure');
+    expect(result.error).toContain('A previous command changed behavior and no longer creates this file');
+    expect(result.error).toContain('Change the operation to "create"');
+  });
+
+  it('should append to existing file', async () => {
+    // Setup: Create file first
+    await fs.writeFile('index.js', 'const x = 1;\n', 'utf-8');
+
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'append',
+      path: 'index.js',
+      content: 'module.exports = x;\n',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(true);
+    expect(await fs.readFile('index.js', 'utf-8')).toBe('const x = 1;\nmodule.exports = x;\n');
+  });
+
+  it('should create file when appending to non-existent file', async () => {
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'append',
+      path: 'new-file.txt',
+      content: 'First line\n',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(true);
+    expect(await fs.readFile('new-file.txt', 'utf-8')).toBe('First line\n');
+  });
+
+  it('should create parent directories automatically', async () => {
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'create',
+      path: 'deeply/nested/path/file.txt',
+      content: 'content',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(true);
+    expect(await fs.readFile('deeply/nested/path/file.txt', 'utf-8')).toBe('content');
+  });
+
+  it('should detect real-world Symfony scenario', async () => {
+    // Simulate: composer create-project creates .env
+    await fs.writeFile('.env', 'APP_ENV=dev\n', 'utf-8');
+
+    // Procedure says: "Replace the contents of .env"
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'replace',
+      path: '.env',
+      content: 'MONGODB_URL=mongodb://localhost\nMONGODB_DB=sample_restaurants\n',
+    };
+
+    const result = await executor.execute(action, context);
+
+    expect(result.success).toBe(true);
+    expect(await fs.readFile('.env', 'utf-8')).toContain('MONGODB_URL');
+  });
+
+  it('should catch framework change scenario', async () => {
+    // Simulate: Symfony 8.0 no longer creates .env
+    // (file doesn't exist)
+
+    // Procedure still says: "Replace the contents of .env"
+    const action: FileTestableAction = {
+      actionType: 'file',
+      operation: 'replace',
+      path: '.env',
+      content: 'MONGODB_URL=mongodb://localhost\n',
+    };
+
+    const result = await executor.execute(action, context);
+
+    // Test fails, alerting team to update documentation
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('file does not exist');
+    expect(result.error).toContain('previous command changed behavior');
+  });
+});
 ```
 
 ### 7.2 Integration Testing
@@ -5009,11 +5163,52 @@ File operations are executed **before** code blocks in the same step:
 
 1. **Working Directory**: All file paths are relative to the per-procedure temp directory (`.proctest/runs/<timestamp>-<procedure-id>/`)
 2. **Directory Creation**: Parent directories are created automatically if they don't exist
-3. **Operation Execution**:
-   - `create`: Write content to file (fail if file already exists, unless overwrite is configured)
-   - `replace`: Overwrite existing file content (create if doesn't exist)
-   - `append`: Append content to existing file (create if doesn't exist)
+3. **Operation Execution** (Strict Mode):
+   - `create`: Write content to file. **Fails if file already exists** (validates procedure doesn't have duplicate create steps)
+   - `replace`: Overwrite existing file content. **Fails if file doesn't exist** (validates procedure has proper setup steps)
+   - `append`: Append content to existing file (creates file if it doesn't exist - append is additive by nature)
 4. **Cleanup**: Files are automatically cleaned up when the temp directory is removed
+
+**File Operation Preconditions (Strict Mode)**:
+
+File operations enforce strict preconditions to validate that procedures work as written:
+
+| Operation | File Must Exist? | Behavior if Precondition Fails |
+|-----------|------------------|--------------------------------|
+| `create` | **NO** (must not exist) | Fail with error explaining file already exists |
+| `replace` | **YES** (must exist) | Fail with error explaining file doesn't exist |
+| `append` | **NO** (optional) | Create file if it doesn't exist |
+
+**Rationale for Strict Mode**:
+
+Strict preconditions catch documentation bugs and framework changes:
+
+- **Documentation Bug**: Procedure says "replace .env" but forgot to include "create .env" step earlier
+- **Framework Change**: Previous command used to create file but framework version changed and no longer does
+- **Semantic Clarity**: "Create" vs "Replace" vs "Append" have distinct meanings and preconditions
+- **Living Documentation**: Ensures procedures stay in sync with actual framework/tool behavior
+
+**Example Scenarios**:
+
+*Scenario 1 - Missing Create Step*:
+```rst
+❌ Broken Procedure:
+1. Run: composer create-project symfony/skeleton restaurants
+2. Replace the contents of .env with...
+
+Problem: If Symfony stops auto-creating .env, step 2 fails
+Solution: Test fails, alerting team to add explicit create step
+```
+
+*Scenario 2 - Duplicate Create*:
+```rst
+❌ Broken Procedure:
+1. Create a file named config.js
+2. Create a file named config.js  (duplicate!)
+
+Problem: Second create step will fail
+Solution: Test fails, alerting team to fix duplicate
+```
 
 **Working Directory Changes**:
 
@@ -5071,20 +5266,42 @@ export class FileExecutor implements Executor {
       // Ensure parent directory exists
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
 
+      const fileExists = await this.fileExists(fullPath);
+
       switch (action.operation) {
         case 'create':
-          // Fail if file exists (unless configured otherwise)
-          if (await this.fileExists(fullPath)) {
-            throw new Error(`File already exists: ${action.path}`);
+          // STRICT: File must NOT exist
+          if (fileExists) {
+            throw new Error(
+              `Cannot create file ${action.path}: file already exists.\n\n` +
+              `The procedure says to "create a file" but it already exists.\n` +
+              `This may indicate:\n` +
+              `  1. A previous step already created this file\n` +
+              `  2. The operation should be "replace" instead of "create"\n\n` +
+              `Suggestion: Change the operation to "replace" or remove the duplicate step.`
+            );
           }
           await fs.writeFile(fullPath, action.content, 'utf-8');
           break;
 
         case 'replace':
+          // STRICT: File MUST exist
+          if (!fileExists) {
+            throw new Error(
+              `Cannot replace contents of ${action.path}: file does not exist.\n\n` +
+              `The procedure says to "replace the contents" but the file was not found.\n` +
+              `This may indicate:\n` +
+              `  1. A missing "create ${action.path}" step earlier in the procedure\n` +
+              `  2. A previous command changed behavior and no longer creates this file\n` +
+              `  3. The operation should be "create" instead of "replace"\n\n` +
+              `Suggestion: Add a file creation step before this, or change the operation to "create".`
+            );
+          }
           await fs.writeFile(fullPath, action.content, 'utf-8');
           break;
 
         case 'append':
+          // PERMISSIVE: File may or may not exist (append is additive)
           await fs.appendFile(fullPath, action.content, 'utf-8');
           break;
       }
@@ -5101,6 +5318,15 @@ export class FileExecutor implements Executor {
         error: error.message,
         stderr: error.stack
       };
+    }
+  }
+
+  private async fileExists(path: string): Promise<boolean> {
+    try {
+      await fs.access(path);
+      return true;
+    } catch {
+      return false;
     }
   }
 
