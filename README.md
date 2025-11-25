@@ -160,7 +160,8 @@ TBD - MongoDB internal project
 | **Test Discovery** | Limited (scans for test specs) | **Automatic procedure detection** from documentation |
 | **Test Definition** | Separate test files or inline annotations | **No separate files or annotations** - tests living documentation |
 | **Drift Risk** | ⚠️ High - tests can become out-of-sync with docs | ✅ **Zero** - tests *are* the documentation |
-| **Code Execution** | `runCode` action | Code, Shell, CLI (mongosh, atlas-cli) |
+| **Code Execution** | `runCode` action (generic) | **Code, Shell, CLI** (mongosh, atlas-cli) + **IDE execution** with language-specific defaults |
+| **File Operations** | Not supported | **Create, replace, append** with strict preconditions to catch doc bugs |
 | **UI Testing** | `click`, `find`, `type` actions | **Navigation mappings** for generic UI instructions |
 | **API Testing** | Generic `httpRequest` | **MongoDB Atlas Admin API** specific support |
 | **Prerequisites** | Manual configuration | **Automatic detection and validation** |
@@ -187,13 +188,36 @@ TBD - MongoDB internal project
 - `proctest` automatically discovers procedures in documentation
 - Writers don't need to configure what to test - it's automatic
 
-**4. MongoDB-Specific Features**
+**4. Enforces Consistency Through Explicitness**
+- Testing documentation as-written requires procedures to be explicit or they fail
+- Forces consistency across documentation (same concepts communicated the same way)
+- Eliminates ambiguity that confuses both human readers and automated tooling
+- Improves documentation quality through enforced clarity
+
+**5. File Operations with Strict Validation**
+- Doc Detective doesn't support file operations (create, replace, append)
+- `proctest` detects file operations from prose and validates preconditions:
+  - **Create**: Fails if file already exists (catches duplicate steps)
+  - **Replace**: Fails if file doesn't exist (catches missing setup or framework changes)
+  - **Append**: Creates file if needed (additive operation)
+- Strict mode catches documentation bugs and framework behavior changes
+- Example: If Symfony stops creating `.env` files, tests fail immediately
+
+**6. IDE Execution with Convention-Over-Configuration**
+- Doc Detective's `runCode` requires explicit runtime commands
+- `proctest` handles "From your IDE, run the file" instructions automatically:
+  - Language-specific defaults (Java → Maven, C# → dotnet, Python → python3)
+  - Command interpolation (`{filename}`, `{className}`, `{basename}`)
+  - Optional overrides via configuration
+- Matches real-world developer workflows without prescribing specific toolchains
+
+**7. MongoDB-Specific Features**
 - Atlas Admin API testing with authentication
 - mongosh and atlas-cli command execution
 - Integration with `snooty.toml` for source constants
 - Support for MongoDB documentation patterns (tabs, composable tutorials)
 
-**5. Zero-Config Philosophy**
+**8. Zero-Config Philosophy**
 - Doc Detective requires configuration files for most use cases
 - `proctest` works out-of-the-box for 90% of cases
 - Configuration only needed for edge cases
@@ -205,8 +229,9 @@ While Doc Detective is a solid framework, we're exploring `proctest` because:
 1. **Format mismatch** - Our docs are in RST, not Markdown
 2. **Drift prevention** - We want to test living documentation, not point-in-time snapshots
 3. **Writer experience** - Zero-config, automatic discovery reduces friction
-4. **MongoDB-specific needs** - Atlas API, mongosh, atlas-cli, snooty.toml integration
+4. **MongoDB-specific needs** - Atlas API, mongosh, atlas-cli, snooty.toml integration, procedure discovery
 5. **Maintenance burden** - Separate test files create additional maintenance overhead
+6. **Documentation quality** - Enforcing explicitness improves consistency and clarity across all docs
 
 This spike validates whether a purpose-built solution better serves our needs than adapting an existing tool.
 
